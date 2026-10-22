@@ -6,6 +6,16 @@ set -euxo pipefail
 export DEBIAN_FRONTEND=noninteractive
 v="$RUBY_VERSION"
 
+# Same as dockerfiles/Dockerfile.bullseye: deb.debian.org's bullseye-security pool misses files its index lists.
+if [[ "$DISTRO" = bullseye ]]; then
+  printf '%s\n' \
+    'deb http://archive.debian.org/debian bullseye main' \
+    'deb http://archive.debian.org/debian bullseye-updates main' \
+    'deb http://archive.debian.org/debian-security bullseye-security main' \
+    > /etc/apt/sources.list
+  echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive
+fi
+
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates
 install -D -m0644 /keys/sorah-ruby.gpg /usr/local/share/keyrings/sorah-ruby.gpg
