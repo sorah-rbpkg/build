@@ -52,6 +52,14 @@ Its GitHub token comes from `GH_TOKEN`, or from sts-cat through the `DebReleaser
 }
 ```
 
+### Releasing ruby-defaults
+
+[sorah-rbpkg/ruby-defaults](https://github.com/sorah-rbpkg/ruby-defaults) is a native package, built without an orig tarball. It has one series per default Ruby, `builds/ruby-defaults<N.M>.jsonnet`, each built from its own branch. Commit the changelog entry, `1:N.M+0nkmiX~dist`, to that branch, push it, and roll it like any other series:
+
+```
+bin/roll --repository sorah-rbpkg/ruby-defaults master master-3.4
+```
+
 ### Handling failed builds
 
 - A flaky job: re-run the failed jobs of the run.

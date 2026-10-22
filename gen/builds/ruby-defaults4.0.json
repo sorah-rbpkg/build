@@ -1,0 +1,21 @@
+{
+   "archs": [
+      "amd64",
+      "arm64"
+   ],
+   "commit": "7ed5a39ed6385420eac0de72b2eeb9b328c2fa56",
+   "dist": "dist/4.0",
+   "distros": [
+      "jammy",
+      "noble",
+      "resolute",
+      "bookworm",
+      "trixie"
+   ],
+   "large_runner": false,
+   "master": "master",
+   "repository": "sorah-rbpkg/ruby-defaults",
+   "smoke": "ruby-defaults",
+   "source": "ruby-defaults",
+   "test": true
+}

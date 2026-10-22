@@ -1,0 +1,22 @@
+{
+   "archs": [
+      "amd64",
+      "arm64"
+   ],
+   "commit": "97625eed944432ec119c019d0bd54dbe337f94dc",
+   "dist": "dist/3.3",
+   "distros": [
+      "focal",
+      "jammy",
+      "noble",
+      "bullseye",
+      "bookworm",
+      "trixie"
+   ],
+   "large_runner": false,
+   "master": "master-3.3",
+   "repository": "sorah-rbpkg/ruby-defaults",
+   "smoke": "ruby-defaults",
+   "source": "ruby-defaults",
+   "test": true
+}
