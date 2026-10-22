@@ -1,0 +1,19 @@
+# Built with the source package's debian/ as context, for its control file.
+FROM debian:bullseye
+
+# deb.debian.org's bullseye-security index lists files its pool no longer has, while the archive keeps them all.
+RUN printf '%s\n' \
+      'deb http://archive.debian.org/debian bullseye main' \
+      'deb http://archive.debian.org/debian bullseye-updates main' \
+      'deb http://archive.debian.org/debian-security bullseye-security main' \
+      > /etc/apt/sources.list \
+  && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+  && apt-get install -y debhelper dh-make devscripts gnupg2 equivs tzdata
+RUN echo buildbot > /etc/mailname
+
+ADD control /control
+RUN apt-get update \
+  && mk-build-deps -i -t 'apt-get -y -o Debug::pkgProblemResolver=yes --no-install-recommends' /control

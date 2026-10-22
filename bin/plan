@@ -101,6 +101,9 @@ def plan_series(series, distro_filter:, test:)
 
   series.distros.filter_map do |distro|
     next if distro_filter && !distro_filter.include?(distro)
+    # dockerfiles/N.M/ holds overrides for a single series.
+    dockerfile = ["dockerfiles/#{series.dist.delete_prefix('dist/')}/Dockerfile.#{distro}", "dockerfiles/Dockerfile.#{distro}"]
+      .find { File.exist?(File.join(ROOT, it)) } or raise "#{series.file}: no dockerfiles/Dockerfile.#{distro}"
 
     deb_version = m[:version].sub('~dist', "~#{distro}")
     tag = tag_for(deb_version)
@@ -129,6 +132,7 @@ def plan_series(series, distro_filter:, test:)
       upstream_tag:,
       upstream_commit:,
       image: "#{DEBIAN_CODENAMES.include?(distro) ? 'debian' : 'ubuntu'}:#{distro}",
+      dockerfile:,
       test:,
       release_repository: test ? BUILD_REPOSITORY : series.repository,
       release_dist_branch: "#{prefix}#{dist_branch}",

@@ -1,0 +1,16 @@
+# Built with the source package's debian/ as context, for its control file.
+FROM ubuntu:22.04
+
+# GitHub-hosted runners run on Azure. noble and later keep their sources in ubuntu.sources, and arm64 uses ports.ubuntu.com.
+RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do \
+      if [ -e "$f" ]; then sed -i -e 's|archive\.ubuntu\.com/ubuntu|azure.archive.ubuntu.com/ubuntu|g' "$f"; fi; \
+    done
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+  && apt-get install -y debhelper dh-make devscripts gnupg2 equivs tzdata
+RUN echo buildbot > /etc/mailname
+
+ADD control /control
+RUN apt-get update \
+  && mk-build-deps -i -t 'apt-get -y -o Debug::pkgProblemResolver=yes --no-install-recommends' /control

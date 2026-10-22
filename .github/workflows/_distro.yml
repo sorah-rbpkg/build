@@ -84,6 +84,7 @@ jobs:
           SOURCE: ${{ fromJSON(inputs.target).source }}
           DISTRO: ${{ fromJSON(inputs.target).distro }}
           ORIG_NAME: ${{ fromJSON(inputs.target).orig_name }}
+          DOCKERFILE: ${{ fromJSON(inputs.target).dockerfile }}
           # The first arch also builds the source package and arch:all packages.
           BUILD: ${{ matrix.arch == fromJSON(inputs.target).archs[0] && 'full' || 'any' }}
 

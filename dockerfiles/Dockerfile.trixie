@@ -1,0 +1,11 @@
+# Built with the source package's debian/ as context, for its control file.
+FROM debian:trixie
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+  && apt-get install -y debhelper dh-make devscripts gnupg2 equivs tzdata
+RUN echo buildbot > /etc/mailname
+
+ADD control /control
+RUN apt-get update \
+  && mk-build-deps -i -t 'apt-get -y -o Debug::pkgProblemResolver=yes --no-install-recommends' /control
