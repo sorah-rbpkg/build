@@ -6,12 +6,7 @@
    "commit": "1948ca3758566608db371090def9b8939e7146eb",
    "dist": "dist/3.3",
    "distros": [
-      "focal",
-      "jammy",
-      "noble",
-      "bullseye",
-      "bookworm",
-      "trixie"
+      "bullseye"
    ],
    "master": "master-3.3",
    "repository": "sorah-rbpkg/ruby",
