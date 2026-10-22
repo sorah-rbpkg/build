@@ -50,13 +50,21 @@ apt-get install -y "${debs[@]}" "${defaults[@]}"
 "irb${sfx}" --version
 "rdoc${sfx}" --version
 "ri${sfx}" --version
-# minitest 6 exits 1 after printing its version.
-{ "minitest${v}" --version || true; } | grep '^minitest '
+# The minitest and test-unit bundled before Ruby 4.0 ship no executable.
+has_executable() {
+  "ruby${sfx}" -e 'exit Gem::Specification.find_by_name(ARGV[0]).executables.include?(ARGV[0])' "$1"
+}
+if has_executable minitest; then
+  # minitest 6 exits 1 after printing its version.
+  { "minitest${v}" --version || true; } | grep '^minitest '
+fi
 "racc${v}" --version
 "rake${sfx}" --version
 "rbs${v}" --version
 "rdbg${v}" --version
-"test-unit${v}" --version
+if has_executable test-unit; then
+  "test-unit${v}" --version
+fi
 "typeprof${v}" --version
 "bundle${sfx}" --version
 "erb${sfx}" --version
