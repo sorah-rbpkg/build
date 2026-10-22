@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+# Usage: bin/verify-orig ORIG_TARBALL UPSTREAM_VERSION
+#
+# Checks that an orig tarball holds the same files as the ruby-lang.org release of UPSTREAM_VERSION.
+require 'date'
+require 'digest'
+require 'find'
+require 'net/http'
+require 'tmpdir'
+require 'yaml'
+
+# Kept in the www.ruby-lang.org repository, apart from the server that hosts the tarballs.
+RELEASES_URL = 'https://raw.githubusercontent.com/ruby/www.ruby-lang.org/master/_data/releases.yml'
+
+def fetch(url)
+  res = Net::HTTP.get_response(URI(url))
+  raise "GET #{url}: #{res.code}" unless res.is_a?(Net::HTTPSuccess)
+  res.body
+end
+
+# Directories are left out, because git cannot keep an empty one.
+def manifest(tarball, dir)
+  Dir.mkdir(dir)
+  system('tar', '-xzf', tarball, '-C', dir, exception: true)
+  roots = Dir.children(dir)
+  raise "#{tarball}: expected one top-level directory, got #{roots.join(', ')}" unless roots.size == 1
+
+  root = File.join(dir, roots.fetch(0))
+  Find.find(root).filter_map do |path|
+    stat = File.lstat(path)
+    name = path.delete_prefix("#{root}/")
+    if stat.symlink?
+      [name, 'symlink', File.readlink(path)]
+    elsif stat.file?
+      [name, format('%o', stat.mode & 0o777), Digest::SHA256.file(path).hexdigest]
+    end
+  end.sort
+end
+
+orig, upstream_version = ARGV
+abort 'Usage: bin/verify-orig ORIG_TARBALL UPSTREAM_VERSION' unless orig && upstream_version
+
+version = upstream_version.tr('~', '-')
+release = YAML.safe_load(fetch(RELEASES_URL), permitted_classes: [Date]).find { it.fetch('version') == version }
+abort "ruby #{version} is not in #{RELEASES_URL}" unless release
+url = release.fetch('url').fetch('gz')
+sha256 = release.fetch('sha256').fetch('gz')
+
+Dir.mktmpdir('verify-orig') do |tmp|
+  upstream = File.join(tmp, File.basename(url))
+  File.binwrite(upstream, fetch(url))
+  actual = Digest::SHA256.file(upstream).hexdigest
+  abort "#{url}: sha256 is #{actual}, not #{sha256}" unless actual == sha256
+
+  expected = manifest(upstream, File.join(tmp, 'upstream'))
+  got = manifest(orig, File.join(tmp, 'orig'))
+  if expected != got
+    (expected - got).first(20).each { warn "- #{it.join(' ')}" }
+    (got - expected).first(20).each { warn "+ #{it.join(' ')}" }
+    abort "#{orig} differs from #{url}"
+  end
+  puts "#{orig} matches #{url} (#{expected.size} files)"
+end

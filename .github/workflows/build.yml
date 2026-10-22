@@ -94,6 +94,20 @@ jobs:
           UPSTREAM_COMMIT: ${{ matrix.orig.upstream_commit }}
           ORIG_NAME: ${{ matrix.orig.orig_name }}
 
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        if: steps.check.outputs.exists == 'false'
+        with:
+          install_args: ruby
+          # A restored cache could alter the check below.
+          cache: false
+
+      - name: verify
+        if: steps.check.outputs.exists == 'false'
+        run: bin/verify-orig "out/${ORIG_NAME}" "$UPSTREAM_VERSION"
+        env:
+          UPSTREAM_VERSION: ${{ matrix.orig.upstream_version }}
+          ORIG_NAME: ${{ matrix.orig.orig_name }}
+
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         id: attest
         if: steps.check.outputs.exists == 'false'
