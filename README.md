@@ -74,7 +74,15 @@ Each series has its own `builds/<series>.json`, rendered from `builds/src/<serie
 
 ### Releasing a new version
 
-Bump `commit` in `builds/src/<series>.jsonnet`, run `bin/generate`, and push to `main`. Approve each distro's release job, then publish the drafts:
+Point the series at the release and push it to `main`, which starts the build:
+
+```
+bin/roll --push master                       # the series on master, at its tip
+bin/roll master master-3.4 master-3.3        # several series; commit only, push later
+bin/roll <full SHA>                          # a given commit
+```
+
+`bin/roll` reads the source package from `debian/changelog` at each revision to find its series, sets `commit` in `builds/src/<series>.jsonnet`, and runs `bin/generate`. It checks every series with `bin/plan` before committing any, then commits each as `roll <series> <version>`. Approve each distro's release job, then publish the drafts:
 
 ```
 bin/publish                                  # every draft on sorah-rbpkg/ruby
@@ -101,7 +109,7 @@ Its GitHub token comes from `GH_TOKEN`, or from sts-cat through the `DebReleaser
 ### Handling failed builds
 
 - A flaky job: re-run the failed jobs of the run.
-- A packaging fix: commit it to `master`, bump `commit`, push. Only distros without a `debian/` tag are built again.
+- A packaging fix: commit it to `master`, then `bin/roll --push <branch>`. Only distros without a `debian/` tag are built again.
 - A deliberate rebuild: run the `build` workflow by hand with `series` and optionally `distros`.
 
 ### Test mode

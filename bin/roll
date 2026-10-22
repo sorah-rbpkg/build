@@ -1,0 +1,101 @@
+#!/usr/bin/env ruby
+# Usage: bin/roll [--push] [--repository OWNER/REPO] REV...
+#
+# Points each series at REV of the source repository, a branch name or a full SHA, and commits each one.
+# The series is the source package named by debian/changelog at REV. Every series is checked with bin/plan
+# before anything is committed. --push then pushes, which starts the builds.
+require 'fileutils'
+require 'json'
+require 'open3'
+require 'optparse'
+
+ROOT = File.expand_path('..', __dir__)
+
+Roll = Data.define(:rev, :commit, :source, :version) do
+  def src = File.join('builds', 'src', "#{source}.jsonnet")
+  def json = File.join('builds', "#{source}.json")
+end
+
+def run(*cmd, **opts) = system(*cmd, exception: true, chdir: ROOT, **opts)
+
+def capture(*cmd)
+  out, status = Open3.capture2(*cmd, chdir: ROOT)
+  raise "#{cmd.join(' ')} failed" unless status.success?
+  out
+end
+
+push = false
+repository = 'sorah-rbpkg/ruby'
+OptionParser.new do |o|
+  o.on('--push', 'Push the commits, which starts the builds') { push = true }
+  o.on('--repository OWNER/REPO') { repository = it }
+end.parse!(ARGV)
+abort 'Usage: bin/roll [--push] [--repository OWNER/REPO] REV...' if ARGV.empty?
+
+branch = capture('git', 'branch', '--show-current').strip
+abort "on #{branch.empty? ? 'a detached HEAD' : branch}, not main" unless branch == 'main'
+
+url = "https://github.com/#{repository}.git"
+# Shared with bin/plan.
+dir = File.join(ROOT, 'tmp', 'plan', repository.tr('/', '_'))
+capture('git', 'init', '-q', '--bare', dir) unless File.directory?(dir)
+
+rolls = ARGV.map do |rev|
+  commit = if rev.match?(/\A\h{40}\z/)
+    rev
+  else
+    capture('git', 'ls-remote', url, "refs/heads/#{rev}").split("\t").first or abort "#{rev} is not a branch of #{repository}"
+  end
+  capture('git', '-C', dir, 'fetch', '-q', '--filter=blob:none', '--no-tags', url, commit)
+  head = capture('git', '-C', dir, 'cat-file', 'blob', "#{commit}:debian/changelog").lines.first
+  m = head.match(/\A(?<source>\S+) \((?<version>[^)]+)\)/) or abort "#{rev}: cannot parse changelog: #{head}"
+  Roll.new(rev:, commit:, source: m[:source], version: m[:version].sub('~dist', ''))
+end
+
+rolls.group_by(&:source).each do |source, group|
+  abort "#{group.map(&:rev).join(', ')} are all #{source}" if group.size > 1
+end
+rolls.each do |roll|
+  abort "#{roll.rev} is #{roll.source}, which has no #{roll.src}" unless File.exist?(File.join(ROOT, roll.src))
+  abort "#{roll.src} or #{roll.json} has uncommitted changes" unless capture('git', 'status', '--porcelain', '--', roll.src, roll.json).empty?
+end
+
+rolls = rolls.reject do |roll|
+  current = JSON.parse(File.read(File.join(ROOT, roll.json))).fetch('commit')
+  next false unless current == roll.commit
+
+  warn "#{roll.source} is already at #{roll.commit}, skipping"
+  true
+end
+exit if rolls.empty?
+
+plans = begin
+  rolls.each do |roll|
+    path = File.join(ROOT, roll.src)
+    current = JSON.parse(File.read(File.join(ROOT, roll.json))).fetch('commit')
+    text = File.read(path)
+    raise "#{roll.src} does not mention #{current} exactly once" unless text.scan(current).size == 1
+    File.write(path, text.sub(current, roll.commit))
+  end
+  run('bin/generate')
+  rolls.to_h { [it, JSON.parse(capture('bin/plan', it.json)).fetch('targets')] }
+rescue
+  run('git', 'checkout', '--', *rolls.flat_map { [it.src, it.json] })
+  raise
+end
+
+message = File.join(ROOT, 'tmp', 'roll-message')
+FileUtils.mkdir_p(File.dirname(message))
+plans.each do |roll, targets|
+  test = JSON.parse(File.read(File.join(ROOT, roll.json))).fetch('test')
+  summary = if targets.empty?
+    'Every distro is already released, so nothing is built.'
+  else
+    "Builds #{targets.map { it.fetch('distro') }.join(', ')}#{test ? ' in test mode' : ''}."
+  end
+  File.write(message, ["roll #{roll.source} #{roll.version}", '', "#{repository}@#{roll.commit}", '', summary].join("\n"))
+  run('git', 'add', '--', roll.src, roll.json)
+  run('git', 'commit', '-q', '-F', message)
+  run('git', 'log', '-1', '--format=%h %s')
+end
+run('git', 'push', 'origin', 'main') if push
