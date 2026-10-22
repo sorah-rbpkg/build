@@ -83,6 +83,7 @@ jobs:
           BUILD: ${{ matrix.arch == fromJSON(inputs.target).archs[0] && 'full' || 'any' }}
 
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        id: attest
         with:
           subject-path: out/*
 
@@ -90,6 +91,21 @@ jobs:
         with:
           name: ${{ fromJSON(inputs.target).source }}-${{ fromJSON(inputs.target).distro }}-${{ matrix.arch }}
           path: out/
+          if-no-files-found: error
+
+      # Kept apart from out/, every file of which becomes a release asset.
+      - name: save attestation url
+        run: |
+          mkdir -p attestation
+          printf '%s\n' "$ATTESTATION_URL" > "attestation/${ARCH}"
+        env:
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+          ARCH: ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: attestation-${{ fromJSON(inputs.target).source }}-${{ fromJSON(inputs.target).distro }}-${{ matrix.arch }}
+          path: attestation/
           if-no-files-found: error
 
   smoke:
@@ -152,6 +168,12 @@ jobs:
           merge-multiple: true
           path: out
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: attestation-${{ fromJSON(inputs.target).source }}-${{ fromJSON(inputs.target).distro }}-*
+          merge-multiple: true
+          path: attestation
+
       - name: download orig
         run: gh release download "$ORIG_RELEASE" --repo "$GITHUB_REPOSITORY" --pattern "$ORIG_NAME" --dir out
         env:
@@ -183,6 +205,7 @@ jobs:
         env:
           TARGET: ${{ inputs.target }}
           DIR: out
+          ATTESTATION_DIR: attestation
         with:
           github-token: ${{ fromJSON(inputs.target).test && github.token || steps.token.outputs.token }}
           script: await require('./.github/scripts/draft-release.js')({ github, core })

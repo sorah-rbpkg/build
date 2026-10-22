@@ -7,7 +7,19 @@ const { assetName } = require('./lib.js');
 // Written into the release body by bin/publish.
 const RESIGNED_MARKER = '<!-- resigned-by:';
 
-function releaseBody(files) {
+function attestationSection(dir) {
+  const lines = ['### Attestations', ''];
+  for (const arch of fs.readdirSync(dir).sort()) {
+    const url = fs.readFileSync(path.join(dir, arch), 'utf8').trim();
+    if (!/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/attestations\/\d+$/.test(url)) {
+      throw new Error(`unexpected attestation url for ${arch}: ${url}`);
+    }
+    lines.push(`- ${arch}: ${url}`);
+  }
+  return lines.join('\n');
+}
+
+function releaseBody(files, attestations) {
   const dscs = files.filter((f) => f.endsWith('.dsc'));
   if (dscs.length !== 1) throw new Error(`expected one .dsc, got ${dscs.join(', ')}`);
 
@@ -16,7 +28,7 @@ function releaseBody(files) {
     const arch = changes.match(/_([a-z0-9]+)\.changes$/)[1];
     body.push(`#### ${arch}`, '', '```', fs.readFileSync(changes, 'utf8').trimEnd(), '```', '');
   }
-  body.push('### dsc', '', '```', fs.readFileSync(dscs[0], 'utf8').trimEnd(), '```');
+  body.push('### dsc', '', '```', fs.readFileSync(dscs[0], 'utf8').trimEnd(), '```', '', attestations);
   return body.join('\n');
 }
 
@@ -25,7 +37,7 @@ module.exports = async ({ github, core }) => {
   const [owner, repo] = target.release_repository.split('/');
   const tag = target.release_tag;
   const files = fs.readdirSync(process.env.DIR).sort().map((name) => path.join(process.env.DIR, name));
-  const body = releaseBody(files);
+  const body = releaseBody(files, attestationSection(process.env.ATTESTATION_DIR));
 
   // Fails when release.js has not pushed the tag, rather than letting the release create one.
   await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });

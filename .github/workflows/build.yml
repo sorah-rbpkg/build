@@ -95,6 +95,7 @@ jobs:
           ORIG_NAME: ${{ matrix.orig.orig_name }}
 
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        id: attest
         if: steps.check.outputs.exists == 'false'
         with:
           subject-path: out/${{ matrix.orig.orig_name }}
@@ -106,7 +107,7 @@ jobs:
         run: |
           gh release create "$ORIG_RELEASE" "out/${ORIG_NAME}" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
-            --title "$ORIG_NAME" --notes "Generated from ${REPOSITORY} ${UPSTREAM_TAG} (${UPSTREAM_COMMIT})."
+            --title "$ORIG_NAME" --notes "Generated from ${REPOSITORY} ${UPSTREAM_TAG} (${UPSTREAM_COMMIT}). Attestation: ${ATTESTATION_URL}"
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ matrix.orig.repository }}
@@ -114,6 +115,7 @@ jobs:
           UPSTREAM_COMMIT: ${{ matrix.orig.upstream_commit }}
           ORIG_NAME: ${{ matrix.orig.orig_name }}
           ORIG_RELEASE: ${{ matrix.orig.orig_release }}
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
 
   distro:
     name: ${{ matrix.target.source }} ${{ matrix.target.distro }}${{ matrix.target.test && ' (test)' || '' }}

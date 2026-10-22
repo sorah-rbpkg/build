@@ -12,7 +12,7 @@ This repository builds the Debian packages of [sorah-rbpkg/ruby](https://github.
    - merge: merges the commit into `dist/N.M/<distro>` and stages the result here as `dist-stage/N.M/<distro>`
    - build: runs `debuild` in the package's `debian/Dockerfile.<distro>` on native amd64 and arm64 runners, and attests every output
    - smoke: installs the packages on a stock image of the distro and runs the interpreter and bundled tools
-   - release: waits for approval in the `release` environment, tags `debian/<version>_<distro>` with gitsign, fast-forwards `dist/N.M/<distro>` on sorah-rbpkg/ruby, and uploads everything to a draft release there
+   - release: waits for approval in the `release` environment, tags `debian/<version>_<distro>` with gitsign, fast-forwards `dist/N.M/<distro>` on sorah-rbpkg/ruby, and uploads everything to a draft release there, with links to the build attestations
 6. [`bin/publish`](./bin/publish), run locally, verifies the draft, re-signs it with your GPG key, adds it to aptly and publishes the release.
 
 Distros are independent: one failing distro never blocks the release of another, and no run cancels another.
