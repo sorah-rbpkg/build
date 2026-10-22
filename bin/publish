@@ -242,7 +242,8 @@ class Publisher
     git = ['git', '--git-dir', release.git_dir]
     commit = capture(*git, 'rev-parse', "#{release.tag}^{commit}").strip
     run(*git, '-c', 'gpg.format=openpgp', 'tag', '-s', '-f', '-m', release.message, release.tag, commit)
-    run('sorah-debsign', *release.changes_paths)
+    # sorah-debsign may run debsign in a container that only sees the working directory.
+    run('sorah-debsign', *release.changes_paths.map { File.basename(it) }, chdir: release.dir)
 
     dir = signed_dir(release)
     FileUtils.rm_rf(dir)
