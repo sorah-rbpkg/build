@@ -140,19 +140,35 @@ class Publisher
   def process(tag)
     puts "=> #{tag}"
     release = download(tag)
-    body = view(tag).fetch('body')
+    draft = view(tag)
 
-    if body.include?("#{RESIGNED_MARKER} #{@fingerprint}")
+    if draft.fetch('body').include?("#{RESIGNED_MARKER} #{@fingerprint}")
       puts ' * already re-signed, skipping verification'
     else
-      verify(release)
-      resign(release)
+      if signed?(release, draft)
+        puts ' * resuming an interrupted re-sign'
+        FileUtils.cp(Dir[File.join(signed_dir(release), '*')], release.dir)
+      else
+        verify(release)
+        sign(release, draft)
+      end
+      push_signed(release)
     end
     publish(release) if @publish
   end
 
   def view(tag)
-    JSON.parse(capture(@env, 'gh', 'release', 'view', tag, '--repo', @repository, '--json', 'isDraft,body'))
+    JSON.parse(capture(@env, 'gh', 'release', 'view', tag, '--repo', @repository, '--json', 'id,isDraft,body'))
+  end
+
+  # Kept until the release is published, so an interrupted push or upload can be repeated.
+  def signed_dir(release) = File.join(ROOT, 'tmp', 'publish', "#{release.tag.tr('/', '_')}.signed")
+
+  # The release ID ties the signed files to this draft, not an earlier one with the same tag.
+  def signed?(release, draft)
+    File.read(File.join(signed_dir(release), '.complete')) == draft.fetch('id')
+  rescue Errno::ENOENT
+    false
   end
 
   def download(tag)
@@ -205,19 +221,28 @@ class Publisher
     end
   end
 
-  def resign(release)
+  def sign(release, draft)
     puts " * re-signing with #{@fingerprint}"
-    draft = view(release.tag)
-    raise "#{release.tag} is no longer a draft" unless draft.fetch('isDraft')
-    attestations = attestation_section(draft.fetch('body'))
-
     git = ['git', '--git-dir', release.git_dir]
     commit = capture(*git, 'rev-parse', "#{release.tag}^{commit}").strip
     run(*git, '-c', 'gpg.format=openpgp', 'tag', '-s', '-f', '-m', release.message, release.tag, commit)
     run('sorah-debsign', *release.changes_paths)
 
-    # Checked again right before the irreversible part, which replaces the tag that CI pushed.
-    raise "#{release.tag} is no longer a draft" unless view(release.tag).fetch('isDraft')
+    dir = signed_dir(release)
+    FileUtils.rm_rf(dir)
+    FileUtils.mkdir_p(dir)
+    FileUtils.cp(release.signed_files, dir)
+    File.write(File.join(dir, '.complete'), draft.fetch('id'))
+  end
+
+  # Repeatable: the tag is force-pushed and the files replaced, both with what sign produced.
+  def push_signed(release)
+    puts ' * pushing the re-signed tag and files'
+    draft = view(release.tag)
+    raise "#{release.tag} is no longer a draft" unless draft.fetch('isDraft')
+    attestations = attestation_section(draft.fetch('body'))
+
+    git = ['git', '--git-dir', release.git_dir]
     puts "  $ git push --force #{@url} refs/tags/#{release.tag}"
     auth = "http.https://github.com/.extraheader=AUTHORIZATION: basic #{["x-access-token:#{@token}"].pack('m0')}"
     system(*git, '-c', auth, 'push', '--force', @url, "refs/tags/#{release.tag}", exception: true)
