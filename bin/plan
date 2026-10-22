@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# Usage: bin/plan [--since REV] [--distros a,b] [--test] [builds/SERIES.json ...]
+# Usage: bin/plan [--since REV] [--distros a,b] [--test] [gen/builds/SERIES.json ...]
 #
 # Prints the build targets as JSON: {"targets": [...], "origs": [...]}.
 # A distro whose debian/ tag already exists on the source repository is left out.
@@ -47,9 +47,9 @@ end
 
 def changed_series(since)
   # A push that creates the branch has no previous commit to compare with.
-  return Dir[File.join(ROOT, 'builds/*.json')] if since.nil? || since.match?(/\A0+\z/)
+  return Dir[File.join(ROOT, 'gen/builds/*.json')] if since.nil? || since.match?(/\A0+\z/)
 
-  git('diff', '--name-only', '--diff-filter=AM', since, 'HEAD', '--', 'builds/*.json', dir: ROOT)
+  git('diff', '--name-only', '--diff-filter=AM', since, 'HEAD', '--', 'gen/builds/*.json', dir: ROOT)
     .lines(chomp: true).map { File.join(ROOT, it) }
 end
 

@@ -6,7 +6,7 @@ exclude = List("tmp/**")
 
 local linters = new Mapping<String, Step> {
   ["jsonnet-generated"] {
-    glob = List("builds/**")
+    glob = List("builds/**", "gen/builds/**")
     check = "bin/generate --check"
     fix = "bin/generate"
   }

@@ -15,8 +15,8 @@ require 'optparse'
 ROOT = File.expand_path('..', __dir__)
 
 Roll = Data.define(:rev, :commit, :source, :version, :upstream_tag) do
-  def src = File.join('builds', 'src', "#{source}.jsonnet")
-  def json = File.join('builds', "#{source}.json")
+  def src = File.join('builds', "#{source}.jsonnet")
+  def json = File.join('gen', 'builds', "#{source}.json")
 end
 
 def run(*cmd, **opts) = system(*cmd, exception: true, chdir: ROOT, **opts)

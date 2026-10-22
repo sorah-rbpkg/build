@@ -1,4 +1,4 @@
-local series = import '../lib/series.libsonnet';
+local series = import 'series.libsonnet';
 
 series.ruby(
   '3.4',

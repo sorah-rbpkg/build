@@ -4,7 +4,7 @@ module.exports = async ({ context, core, exec }) => {
   if (context.eventName === 'workflow_dispatch') {
     const { series, distros, test } = context.payload.inputs;
     if (!/^[a-z0-9.-]+$/.test(series)) throw new Error(`invalid series: ${series}`);
-    args = [`builds/${series}.json`];
+    args = [`gen/builds/${series}.json`];
     if (distros) args.unshift('--distros', distros);
     if (test === true || test === 'true') args.unshift('--test');
   } else {

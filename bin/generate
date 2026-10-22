@@ -1,6 +1,6 @@
 #!/bin/bash
 # Usage: bin/generate [--check]
-# Renders builds/src/*.jsonnet into builds/*.json. --check fails when a rendered file differs.
+# Renders builds/*.jsonnet into gen/builds/*.json. --check fails when a rendered file differs.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -10,8 +10,8 @@ if [[ "${1:-}" == "--check" ]]; then
 fi
 
 status=0
-for src in builds/src/*.jsonnet; do
-  dst="builds/$(basename "$src" .jsonnet).json"
+for src in builds/*.jsonnet; do
+  dst="gen/builds/$(basename "$src" .jsonnet).json"
   rendered="$(jrsonnet "$src")"
   if [[ -n "$check" ]]; then
     if ! diff -u "$dst" - <<<"$rendered"; then

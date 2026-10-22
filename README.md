@@ -5,7 +5,7 @@ This repository builds the Debian packages of [sorah-rbpkg/ruby](https://github.
 ## How it works
 
 1. A release is prepared on `master` (or `master-N.M`) of sorah-rbpkg/ruby with `gbp import-orig` and pushed.
-2. `commit` in [`builds/<series>.json`](./builds) is pointed at that commit and pushed to `main` here.
+2. `commit` in [`builds/<series>.jsonnet`](./builds) is pointed at that commit and pushed to `main` here.
 3. [`build.yml`](./.github/workflows/build.yml) runs [`bin/plan`](./bin/plan), which checks that the commit is signed by a key in [`keys/committers.asc`](./keys/committers.asc) and lists the distros whose `debian/<version>_<distro>` tag does not exist yet.
 4. The orig tarball is generated once per run from the commit of the signed `upstream/<version>` tag, checked against the ruby-lang.org release by [`bin/verify-orig`](./bin/verify-orig), and compared with any copy already in the apt repository, whose pool rejects a second orig with different bytes. Every distro in the run builds from that one file, and each distro's release carries it.
 5. [`_distro.yml`](./.github/workflows/_distro.yml) runs once per distro:
@@ -52,10 +52,10 @@ hk install
 
 ## Configuration
 
-Each series has its own `builds/<series>.json`, rendered from `builds/src/<series>.jsonnet` by `bin/generate` with jrsonnet. `hk check` fails when the two disagree.
+Each series has its own `builds/<series>.jsonnet`, which `bin/generate` renders with jrsonnet into `gen/builds/<series>.json`, the file the workflows read. `builds/series.libsonnet` holds the defaults they share. `hk check` fails when the two disagree.
 
 ```jsonc
-// builds/ruby4.0.json
+// gen/builds/ruby4.0.json
 {
   "source": "ruby4.0",                  // Source: in debian/control
   "repository": "sorah-rbpkg/ruby",
@@ -68,7 +68,7 @@ Each series has its own `builds/<series>.json`, rendered from `builds/src/<serie
 }
 ```
 
-`bin/plan builds/ruby4.0.json` shows locally what a push would build.
+`bin/plan gen/builds/ruby4.0.json` shows locally what a push would build.
 
 ## Usage
 
@@ -83,7 +83,7 @@ bin/roll <full SHA>                          # a given commit
 git push
 ```
 
-`bin/roll` reads the source package from `debian/changelog` at each revision to find its series, sets `commit` in `builds/src/<series>.jsonnet`, and runs `bin/generate`. It checks every series with `bin/plan` before committing any, then commits each as `roll <series> <version>`. It first makes sure your checkout of sorah-rbpkg/ruby, `../ruby` by default, has pushed each branch and its `upstream/<version>` tag. Approve each distro's release job, then publish the drafts:
+`bin/roll` reads the source package from `debian/changelog` at each revision to find its series, sets `commit` in `builds/<series>.jsonnet`, and runs `bin/generate`. It checks every series with `bin/plan` before committing any, then commits each as `roll <series> <version>`. It first makes sure your checkout of sorah-rbpkg/ruby, `../ruby` by default, has pushed each branch and its `upstream/<version>` tag. Approve each distro's release job, then publish the drafts:
 
 ```
 bin/publish                                  # every draft on sorah-rbpkg/ruby
