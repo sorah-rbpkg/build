@@ -172,7 +172,7 @@ class Publisher
   def run_all
     @relay&.check
     drafts = JSON.parse(capture(@env, 'gh', 'release', 'list', '--repo', @repository, '--limit', '200', '--json', 'tagName,isDraft'))
-      .select { it.fetch('isDraft') && it.fetch('tagName').start_with?("#{@prefix}debian/") }
+      .select { it.fetch('isDraft') && it.fetch('tagName').match?(%r{\A#{@prefix}debian/}) }
       .map { it.fetch('tagName') }
     drafts &= @tags unless @tags.empty?
     abort 'No draft releases to publish' if drafts.empty?
@@ -259,7 +259,7 @@ class Publisher
 
     fields = parse_debian_metafile(File.read(changes_paths.first))
     Release.new(
-      repository: @repository, prefix: @prefix, tag:, dir:, git_dir: @git_dir, changes_paths:, dsc_path: dsc_paths.first, files:,
+      repository: @repository, prefix: tag[%r{\A(.*?)debian/}, 1], tag:, dir:, git_dir: @git_dir, changes_paths:, dsc_path: dsc_paths.first, files:,
       source: fields.fetch('Source').first, version: fields.fetch('Version').first, distro: fields.fetch('Distribution').first,
     )
   end
@@ -472,7 +472,8 @@ OptionParser.new do |o|
   o.on('--relay-only', 'Only relay released versions to sorah-rbpkg/dockerfiles') { relay_only = true }
   o.on('--test', 'Work on the test/ releases of a test run, and never publish') do
     repository = BUILD_REPOSITORY
-    prefix = 'test/'
+    # A test run writes under test/<repo>/.
+    prefix = 'test/[^/]+/'
     publish = false
     test = true
   end

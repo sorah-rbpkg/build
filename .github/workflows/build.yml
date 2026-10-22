@@ -117,7 +117,7 @@ jobs:
           if-no-files-found: error
 
   distro:
-    name: ${{ matrix.target.source }} ${{ matrix.target.distro }}${{ matrix.target.test && ' (test)' || '' }}
+    name: ${{ matrix.target.id }} ${{ matrix.target.distro }}${{ matrix.target.test && ' (test)' || '' }}
     needs: [plan, orig]
     if: needs.plan.outputs.targets != '[]'
     permissions:

@@ -32,6 +32,8 @@ Series = Data.define(:file, :source, :repository, :master, :commit, :dist, :dist
   end
 
   def url = "https://github.com/#{repository}.git"
+  # Unique across series, unlike source: ruby-defaults has one series per default Ruby.
+  def id = File.basename(file, '.json')
 end
 
 def git(*args, dir: nil)
@@ -101,8 +103,8 @@ def plan_series(series, distro_filter:, test:)
 
   series.distros.filter_map do |distro|
     next if distro_filter && !distro_filter.include?(distro)
-    # dockerfiles/N.M/ holds overrides for a single series.
-    dockerfile = ["dockerfiles/#{series.dist.delete_prefix('dist/')}/Dockerfile.#{distro}", "dockerfiles/Dockerfile.#{distro}"]
+    # dockerfiles/<id>/ holds overrides for a single series.
+    dockerfile = ["dockerfiles/#{series.id}/Dockerfile.#{distro}", "dockerfiles/Dockerfile.#{distro}"]
       .find { File.exist?(File.join(ROOT, it)) } or raise "#{series.file}: no dockerfiles/Dockerfile.#{distro}"
 
     deb_version = m[:version].sub('~dist', "~#{distro}")
@@ -113,9 +115,10 @@ def plan_series(series, distro_filter:, test:)
     end
 
     dist_branch = "#{series.dist}/#{distro}"
-    # Everything a test run writes goes under test/ of this repository instead of the source repository.
-    prefix = test ? 'test/' : ''
+    # Everything a test run writes goes under test/<repo>/ of this repository instead of the source repository.
+    prefix = test ? "test/#{series.repository.split('/').last}/" : ''
     {
+      id: series.id,
       series_file: File.basename(series.file),
       source: series.source,
       repository: series.repository,
@@ -123,7 +126,7 @@ def plan_series(series, distro_filter:, test:)
       commit: series.commit,
       distro:,
       dist_branch:,
-      stage_branch: "#{prefix}#{series.dist.sub(%r{\Adist/}, 'dist-stage/')}/#{distro}",
+      stage_branch: "#{prefix}dist-stage/#{series.id}/#{distro}",
       deb_version:,
       upstream_version:,
       tag:,

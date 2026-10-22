@@ -64,8 +64,8 @@ A series with `"test": true` runs every build in test mode, including those star
 A test run goes through every job, approval included, without writing to sorah-rbpkg/ruby:
 
 - Distros are built even when already released, so a released version can serve as the test subject.
-- The release job obtains no sts-cat token. It pushes `test/dist/N.M/<distro>` and `test/debian/<version>_<distro>` to this repository and creates the draft release here. A later test run replaces them.
-- The stage branch is named `test/dist-stage/...`.
+- The release job obtains no sts-cat token. It pushes `test/<repo>/dist/N.M/<distro>` and `test/<repo>/debian/<version>_<distro>` to this repository, where `<repo>` names the source repository, and creates the draft release here. A later test run replaces them.
+- The stage branch is named `test/<repo>/dist-stage/...`.
 
 `bin/publish --test` verifies and re-signs those drafts with the token of your `gh` login, and never runs aptly or publishes. `bin/cleanup-test` deletes every `test/` release, tag and branch, so the next test run starts from scratch. It refuses while a `build` run is active; `--dry-run` lists what it would delete.
 
@@ -97,8 +97,8 @@ Each series has its own `builds/<series>.jsonnet`, which `bin/generate` renders 
 3. [`build.yml`](./.github/workflows/build.yml) runs [`bin/plan`](./bin/plan), which checks that the commit is signed by a key in [`keys/committers.asc`](./keys/committers.asc) and lists the distros whose `debian/<version>_<distro>` tag does not exist yet.
 4. The orig tarball is generated once per run from the commit of the signed `upstream/<version>` tag, checked against the ruby-lang.org release by [`bin/verify-orig`](./bin/verify-orig), and compared with any copy already in the apt repository, whose pool rejects a second orig with different bytes. Every distro in the run builds from that one file, and each distro's release carries it.
 5. [`_distro.yml`](./.github/workflows/_distro.yml) runs once per distro:
-   - merge: merges the commit into `dist/N.M/<distro>` and stages the result here as `dist-stage/N.M/<distro>`
-   - build: runs `debuild` in the image from [`dockerfiles/Dockerfile.<distro>`](./dockerfiles), or `dockerfiles/N.M/Dockerfile.<distro>` when a series needs its own, with the package's `debian/control` as its build dependencies, on native amd64 and arm64 runners, and attests every output
+   - merge: merges the commit into `dist/N.M/<distro>` and stages the result here as `dist-stage/<series>/<distro>`, where `<series>` is the name of its file under `builds/`
+   - build: runs `debuild` in the image from [`dockerfiles/Dockerfile.<distro>`](./dockerfiles), or `dockerfiles/<series>/Dockerfile.<distro>` when a series needs its own, with the package's `debian/control` as its build dependencies, on native amd64 and arm64 runners, and attests every output
    - smoke: installs the packages on a stock image of the distro and runs the interpreter and bundled tools
    - release: waits for approval in the `release` environment, tags `debian/<version>_<distro>` with gitsign, fast-forwards `dist/N.M/<distro>` on sorah-rbpkg/ruby, and uploads everything to a draft release there, with links to the build attestations
 6. [`bin/publish`](./bin/publish), run locally, verifies the draft, re-signs it with your GPG key, adds it to aptly and publishes the release.
