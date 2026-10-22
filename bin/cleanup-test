@@ -38,5 +38,5 @@ gh_json('api', '--paginate', '--slurp', "repos/#{BUILD_REPOSITORY}/releases?per_
 
 %w[tags heads].each do |kind|
   gh_json('api', '--paginate', '--slurp', "repos/#{BUILD_REPOSITORY}/git/matching-refs/#{kind}/test/").flatten
-    .each { delete("repos/#{BUILD_REPOSITORY}/git/#{it.fetch('ref').delete_prefix('refs/')}", it.fetch('ref'), dry_run:) }
+    .each { delete("repos/#{BUILD_REPOSITORY}/git/#{it.fetch('ref')}", it.fetch('ref'), dry_run:) }
 end
