@@ -114,7 +114,7 @@ A test run goes through every job, approval included, without writing to sorah-r
 - The release job obtains no sts-cat token. It pushes `test/dist/N.M/<distro>` and `test/debian/<version>_<distro>` to this repository and creates the draft release here. A later test run replaces them.
 - The orig tarball and stage branch are named `test/orig/...` and `test/dist-stage/...`, so a test never supplies the orig of a real build.
 
-`bin/publish --test` verifies and re-signs those drafts, and never runs aptly or publishes. `bin/cleanup-test` deletes every `test/` release, tag and branch, so the next test run starts from scratch. It refuses while a `build` run is active; `--dry-run` lists what it would delete.
+`bin/publish --test` verifies and re-signs those drafts with the token of your `gh` login, and never runs aptly or publishes. `bin/cleanup-test` deletes every `test/` release, tag and branch, so the next test run starts from scratch. It refuses while a `build` run is active; `--dry-run` lists what it would delete.
 
 ## Security model
 

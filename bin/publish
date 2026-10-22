@@ -116,12 +116,12 @@ Release = Data.define(:repository, :prefix, :tag, :dir, :git_dir, :changes_paths
 end
 
 class Publisher
-  def initialize(repository:, prefix:, tags:, publish:)
+  def initialize(repository:, prefix:, tags:, publish:, token:)
     @repository = repository
     @prefix = prefix
     @tags = tags
     @publish = publish
-    @token = github_token
+    @token = token
     @fingerprint = gpg_fingerprint
     @env = {'GH_TOKEN' => @token}
     @url = "https://github.com/#{repository}.git"
@@ -280,6 +280,7 @@ end
 publish = true
 repository = 'sorah-rbpkg/ruby'
 prefix = ''
+test = false
 OptionParser.new do |o|
   o.on('--no-publish', 'Stop after re-signing') { publish = false }
   o.on('--repository OWNER/REPO') { repository = it }
@@ -287,7 +288,10 @@ OptionParser.new do |o|
     repository = BUILD_REPOSITORY
     prefix = 'test/'
     publish = false
+    test = true
   end
 end.parse!(ARGV)
 
-Publisher.new(repository:, prefix:, tags: ARGV, publish:).run_all
+# The DebReleaser token cannot see this repository's drafts, so a test uses your own gh login.
+token = test ? ENV['GH_TOKEN'] || capture('gh', 'auth', 'token').strip : github_token
+Publisher.new(repository:, prefix:, tags: ARGV, publish:, token:).run_all
