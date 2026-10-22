@@ -1,0 +1,20 @@
+{
+   "archs": [
+      "amd64",
+      "arm64"
+   ],
+   "commit": "05f028301e9299d1f009723e5e65d01fcb5a7929",
+   "dist": "dist/3.3",
+   "distros": [
+      "focal",
+      "jammy",
+      "noble",
+      "bullseye",
+      "bookworm",
+      "trixie"
+   ],
+   "master": "master-3.3",
+   "repository": "sorah-rbpkg/ruby",
+   "source": "ruby3.3",
+   "test": true
+}

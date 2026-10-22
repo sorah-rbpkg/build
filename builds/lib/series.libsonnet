@@ -1,8 +1,8 @@
 {
-  ruby(version, commit, distros, master='master-%s' % version, test=true):: {
+  ruby(version, commit, distros, master=null, test=true):: {
     source: 'ruby%s' % version,
     repository: 'sorah-rbpkg/ruby',
-    master: master,
+    master: if master == null then 'master-%s' % version else master,
     commit: commit,
     dist: 'dist/%s' % version,
     distros: distros,
