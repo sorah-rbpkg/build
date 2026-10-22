@@ -1,10 +1,14 @@
 #!/usr/bin/env ruby
-# Usage: bin/publish [--dry-run] [--no-publish] [--test] [--repository OWNER/REPO] [TAG ...]
+# Usage: bin/publish [--dry-run] [--no-publish] [--test] [--repository OWNER/REPO] [--dockerfiles-dir DIR] [TAG ...]
+#        bin/publish --relay-only [--dry-run] [--dockerfiles-dir DIR]
 #
 # Takes the draft releases that the build workflow left on the source repository, verifies
 # what CI produced, re-signs the tag and .changes with your GPG key, adds the packages to
 # aptly, and publishes the release. Every phase is skipped when already done, so a run that
 # failed halfway can simply be repeated. --dry-run only verifies, and changes nothing.
+#
+# Then it commits the newest released version of each series and distro to versions.json in a
+# checkout of sorah-rbpkg/dockerfiles, ../dockerfiles by default, and pushes it.
 require 'bundler/inline'
 gemfile do
   source 'https://rubygems.org'
@@ -148,8 +152,9 @@ Release = Data.define(:repository, :prefix, :tag, :dir, :git_dir, :changes_paths
 end
 
 class Publisher
-  def initialize(repository:, prefix:, tags:, publish:, dry_run:, token:)
+  def initialize(repository:, prefix:, tags:, publish:, dry_run:, token:, relay:)
     @repository = repository
+    @relay = relay
     @prefix = prefix
     @tags = tags
     @publish = publish
@@ -161,6 +166,7 @@ class Publisher
   end
 
   def run_all
+    @relay&.check
     drafts = JSON.parse(capture(@env, 'gh', 'release', 'list', '--repo', @repository, '--limit', '200', '--json', 'tagName,isDraft'))
       .select { it.fetch('isDraft') && it.fetch('tagName').start_with?("#{@prefix}debian/") }
       .map { it.fetch('tagName') }
@@ -178,7 +184,10 @@ class Publisher
     each_parallel(drafts, DOWNLOAD_JOBS) { releases[it] = download(it) }
     releases = drafts.map { releases.fetch(it) }
     releases.each { process(it) }
-    publish(releases) if @publish
+    return unless @publish
+
+    publish(releases)
+    @relay.sync
   end
 
   def process(release)
@@ -356,8 +365,88 @@ class Publisher
   end
 end
 
+# Pins the newest released version of each series and distro in versions.json of sorah-rbpkg/dockerfiles.
+class DockerfilesRelay
+  BRANCH = 'master'
+
+  def initialize(dir:, repository:, token:, dry_run:)
+    @dir = dir
+    @repository = repository
+    @dry_run = dry_run
+    @env = {'GH_TOKEN' => token}
+    @path = File.join(dir, 'versions.json')
+  end
+
+  # Runs before anything is published, so a checkout that cannot take the commits fails early.
+  def check
+    abort "#{@dir} has no versions.json; pass --dockerfiles-dir" unless File.exist?(@path)
+    abort "#{@dir} has uncommitted changes" unless git('status', '--porcelain', '--untracked-files=no').empty?
+    abort "#{@dir} is not on #{BRANCH}" unless git('branch', '--show-current').strip == BRANCH
+    run('git', 'fetch', '-q', 'origin', BRANCH, chdir: @dir)
+    abort "#{@dir}: #{BRANCH} is not at origin/#{BRANCH}" unless git('rev-parse', BRANCH) == git('rev-parse', "origin/#{BRANCH}")
+  end
+
+  def sync
+    puts '=> relaying to dockerfiles'
+    versions = JSON.parse(File.read(@path))
+    tracked = versions.flat_map { |series, distros| distros.keys.map { [series, it] } } | built_pairs
+    released = released_versions
+    changes = tracked.sort.filter_map do |series, distro|
+      version = released[[series, distro]] or next
+      current = versions.dig(series, distro)
+      [series, distro, version] if current.nil? || newer?(version, current)
+    end
+    if changes.empty?
+      puts ' * versions.json is up to date'
+      return
+    end
+
+    changes.group_by { |series, distro, version| [series, version.delete_suffix("~#{distro}")] }.each do |(series, version), entries|
+      subject = "roll ruby#{series} #{version}"
+      distros = entries.map { it[1] }
+      if @dry_run
+        puts " * would commit #{subject} for #{distros.join(', ')}"
+        next
+      end
+      entries.each { |_, distro, deb_version| (versions[series] ||= {})[distro] = deb_version }
+      File.write(@path, "#{JSON.pretty_generate(versions.sort.to_h { |s, ds| [s, ds.sort.to_h] })}\n")
+      run('git', 'commit', '-q', '-m', subject, '-m', "Released for #{distros.join(', ')}.", '--', 'versions.json', chdir: @dir)
+    end
+    # Without --force, so a concurrent push fails rather than being overwritten.
+    run('git', 'push', 'origin', BRANCH, chdir: @dir) unless @dry_run
+  end
+
+  private
+
+  def git(*args) = capture('git', *args, chdir: @dir)
+
+  def built_pairs
+    Dir[File.join(ROOT, 'gen', 'builds', '*.json')].flat_map do |file|
+      build = JSON.parse(File.read(file))
+      build.fetch('distros').map { [build.fetch('source').delete_prefix('ruby'), it] }
+    end
+  end
+
+  # Keyed by [series, distro], from the debian/<version>_<distro> tags of published releases.
+  def released_versions
+    tags = JSON.parse(capture(@env, 'gh', 'release', 'list', '--repo', @repository, '--limit', '1000', '--json', 'tagName,isDraft'))
+      .reject { it.fetch('isDraft') }.map { it.fetch('tagName') }.grep(%r{\Adebian/})
+    versions = tags.map { it.delete_prefix('debian/').gsub('.#', '.').tr('_%', '~:') }
+    pairs = versions.filter_map do |version|
+      series = version[/\A(\d+\.\d+)\./, 1]
+      distro = version[/~([a-z]+)\z/, 1]
+      [[series, distro], version] if series && distro
+    end
+    pairs.group_by(&:first).transform_values { |vs| vs.map(&:last).reduce { |a, b| newer?(b, a) ? b : a } }
+  end
+
+  def newer?(a, b) = system('dpkg', '--compare-versions', a, 'gt', b)
+end
+
 publish = true
 dry_run = false
+relay_only = false
+dockerfiles_dir = File.expand_path('../dockerfiles', ROOT)
 repository = 'sorah-rbpkg/ruby'
 prefix = ''
 test = false
@@ -365,6 +454,8 @@ OptionParser.new do |o|
   o.on('-n', '--dry-run', 'Only verify, without signing, pushing or publishing') { dry_run = true }
   o.on('--no-publish', 'Stop after re-signing') { publish = false }
   o.on('--repository OWNER/REPO') { repository = it }
+  o.on('--dockerfiles-dir DIR', 'Local checkout of sorah-rbpkg/dockerfiles') { dockerfiles_dir = File.expand_path(it) }
+  o.on('--relay-only', 'Only relay released versions to sorah-rbpkg/dockerfiles') { relay_only = true }
   o.on('--test', 'Work on the test/ releases of a test run, and never publish') do
     repository = BUILD_REPOSITORY
     prefix = 'test/'
@@ -380,4 +471,11 @@ abort 'another bin/publish is running' unless lock.flock(File::LOCK_EX | File::L
 
 # The DebReleaser token cannot see this repository's drafts, so a test uses your own gh login.
 token = test ? ENV['GH_TOKEN'] || capture('gh', 'auth', 'token').strip : github_token
-Publisher.new(repository:, prefix:, tags: ARGV, publish:, dry_run:, token:).run_all
+relay = DockerfilesRelay.new(dir: dockerfiles_dir, repository:, token:, dry_run:) if publish
+if relay_only
+  abort '--relay-only cannot be combined with --test or --no-publish' unless relay
+  relay.check
+  relay.sync
+else
+  Publisher.new(repository:, prefix:, tags: ARGV, publish:, dry_run:, token:, relay:).run_all
+end

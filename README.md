@@ -31,13 +31,15 @@ bin/publish                                  # every draft on sorah-rbpkg/ruby
 bin/publish debian/4.0.8-0nkmi1_noble        # only this one
 bin/publish --dry-run                        # only verify; changes nothing
 bin/publish --no-publish                     # stop after re-signing
+bin/publish --relay-only                     # only update sorah-rbpkg/dockerfiles
 ```
 
-`bin/publish` takes the drafts through three steps, skipping any that is already done, so a failed run can be repeated:
+`bin/publish` takes the drafts through four steps, skipping any that is already done, so a failed run can be repeated:
 
 1. Verifies the gitsign signature of the tag against `_distro.yml` on `main`, that the tag is on `dist/N.M/<distro>`, the build attestation of every asset, and the checksums in the `.changes` and `.dsc`.
 2. Re-signs the tag with `git tag -s`, and the `.changes`, `.dsc` and `.buildinfo` with `sorah-debsign`, then replaces them on the draft.
 3. Once every draft is re-signed, adds them all with `aptly repo add`, runs `aptly publish update` once per distro, purges the distros' index from cache.ruby-lang.org with `RB_PURGE_TOKEN`, and only then publishes the releases, which makes them immutable.
+4. Commits the newest released version of each series and distro to `versions.json` in your checkout of [sorah-rbpkg/dockerfiles](https://github.com/sorah-rbpkg/dockerfiles), `../dockerfiles` by default, as `roll <source> <version>`, and pushes it, which rebuilds those images. It checks before step 3 that the checkout is clean and at `origin/master`, and never moves a version back.
 
 Its GitHub token comes from `GH_TOKEN`, or from sts-cat through the `DebReleaser` role:
 
@@ -150,7 +152,7 @@ mise install
 hk install
 ```
 
-`hk check --all` runs the same checks as CI. `bin/publish` additionally needs `gpg`, [`sorah-debsign`](https://github.com/sorah/config/blob/master/bin/sorah-debsign) on `PATH`, and an `aptly` configured with the `sorah-ruby-<distro>` repositories and the `s3:sorah-ruby:` endpoint.
+`hk check --all` runs the same checks as CI. `bin/publish` additionally needs `gpg`, [`sorah-debsign`](https://github.com/sorah/config/blob/master/bin/sorah-debsign) on `PATH`, and an `aptly` configured with the `sorah-ruby-<distro>` repositories and the `s3:sorah-ruby:` endpoint, and a checkout of sorah-rbpkg/dockerfiles you can push to `master`, `../dockerfiles` by default.
 
 ## Prior art
 
