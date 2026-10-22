@@ -1,9 +1,12 @@
 #!/usr/bin/env ruby
-# Usage: bin/roll [--push] [--repository OWNER/REPO] REV...
+# Usage: bin/roll [--repository OWNER/REPO] [--source-dir DIR] REV...
 #
 # Points each series at REV of the source repository, a branch name or a full SHA, and commits each one.
 # The series is the source package named by debian/changelog at REV. Every series is checked with bin/plan
-# before anything is committed. --push then pushes, which starts the builds.
+# before anything is committed. Pushing the commits starts the builds.
+#
+# A local checkout of the source repository, ../<repo> by default, must have pushed REV's branch and its
+# upstream tag, as REV is resolved on GitHub.
 require 'fileutils'
 require 'json'
 require 'open3'
@@ -11,7 +14,7 @@ require 'optparse'
 
 ROOT = File.expand_path('..', __dir__)
 
-Roll = Data.define(:rev, :commit, :source, :version) do
+Roll = Data.define(:rev, :commit, :source, :version, :upstream_tag) do
   def src = File.join('builds', 'src', "#{source}.jsonnet")
   def json = File.join('builds', "#{source}.json")
 end
@@ -24,13 +27,15 @@ def capture(*cmd)
   out
 end
 
-push = false
 repository = 'sorah-rbpkg/ruby'
+source_dir = nil
 OptionParser.new do |o|
-  o.on('--push', 'Push the commits, which starts the builds') { push = true }
   o.on('--repository OWNER/REPO') { repository = it }
+  o.on('--source-dir DIR', 'Local checkout of the source repository') { source_dir = File.expand_path(it) }
 end.parse!(ARGV)
-abort 'Usage: bin/roll [--push] [--repository OWNER/REPO] REV...' if ARGV.empty?
+abort 'Usage: bin/roll [--repository OWNER/REPO] [--source-dir DIR] REV...' if ARGV.empty?
+source_dir ||= File.expand_path(File.join('..', repository.split('/').last), ROOT)
+abort "#{source_dir} is not a checkout of #{repository}; pass --source-dir" unless File.directory?(File.join(source_dir, '.git'))
 
 branch = capture('git', 'branch', '--show-current').strip
 abort "on #{branch.empty? ? 'a detached HEAD' : branch}, not main" unless branch == 'main'
@@ -49,7 +54,25 @@ rolls = ARGV.map do |rev|
   capture('git', '-C', dir, 'fetch', '-q', '--filter=blob:none', '--no-tags', url, commit)
   head = capture('git', '-C', dir, 'cat-file', 'blob', "#{commit}:debian/changelog").lines.first
   m = head.match(/\A(?<source>\S+) \((?<version>[^)]+)\)/) or abort "#{rev}: cannot parse changelog: #{head}"
-  Roll.new(rev:, commit:, source: m[:source], version: m[:version].sub('~dist', ''))
+  upstream_version = m[:version].sub(/\A\d+:/, '').sub(/-[^-]+\z/, '')
+  Roll.new(rev:, commit:, source: m[:source], version: m[:version].sub('~dist', ''),
+    upstream_tag: "upstream/#{upstream_version.tr('~:', '_%')}")
+end
+
+def local_rev(dir, ref)
+  out, status = Open3.capture2('git', '-C', dir, 'rev-parse', '--verify', '-q', ref)
+  status.success? ? out.strip : nil
+end
+
+rolls.each do |roll|
+  unless roll.rev.match?(/\A\h{40}\z/)
+    local = local_rev(source_dir, "refs/heads/#{roll.rev}")
+    abort "#{roll.rev} is at #{local} in #{source_dir} but at #{roll.commit} on #{repository}" if local && local != roll.commit
+  end
+  remote = capture('git', 'ls-remote', url, "refs/tags/#{roll.upstream_tag}").split("\t").first
+  abort "#{roll.upstream_tag} is not on #{repository}; push it first" unless remote
+  local = local_rev(source_dir, "refs/tags/#{roll.upstream_tag}")
+  abort "#{roll.upstream_tag} differs between #{source_dir} and #{repository}" if local && local != remote
 end
 
 rolls.group_by(&:source).each do |source, group|
@@ -98,4 +121,3 @@ plans.each do |roll, targets|
   run('git', 'commit', '-q', '-F', message)
   run('git', 'log', '-1', '--format=%h %s')
 end
-run('git', 'push', 'origin', 'main') if push

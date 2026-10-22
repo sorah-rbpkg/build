@@ -74,15 +74,16 @@ Each series has its own `builds/<series>.json`, rendered from `builds/src/<serie
 
 ### Releasing a new version
 
-Point the series at the release and push it to `main`, which starts the build:
+Point the series at the release, check the commits, and push them to `main`, which starts the build:
 
 ```
-bin/roll --push master                       # the series on master, at its tip
-bin/roll master master-3.4 master-3.3        # several series; commit only, push later
+bin/roll master                              # the series on master, at its tip on GitHub
+bin/roll master master-3.4 master-3.3        # several series at once
 bin/roll <full SHA>                          # a given commit
+git push
 ```
 
-`bin/roll` reads the source package from `debian/changelog` at each revision to find its series, sets `commit` in `builds/src/<series>.jsonnet`, and runs `bin/generate`. It checks every series with `bin/plan` before committing any, then commits each as `roll <series> <version>`. Approve each distro's release job, then publish the drafts:
+`bin/roll` reads the source package from `debian/changelog` at each revision to find its series, sets `commit` in `builds/src/<series>.jsonnet`, and runs `bin/generate`. It checks every series with `bin/plan` before committing any, then commits each as `roll <series> <version>`. It first makes sure your checkout of sorah-rbpkg/ruby, `../ruby` by default, has pushed each branch and its `upstream/<version>` tag. Approve each distro's release job, then publish the drafts:
 
 ```
 bin/publish                                  # every draft on sorah-rbpkg/ruby
@@ -109,7 +110,7 @@ Its GitHub token comes from `GH_TOKEN`, or from sts-cat through the `DebReleaser
 ### Handling failed builds
 
 - A flaky job: re-run the failed jobs of the run.
-- A packaging fix: commit it to `master`, then `bin/roll --push <branch>`. Only distros without a `debian/` tag are built again.
+- A packaging fix: commit it to `master`, then `bin/roll <branch>` and push. Only distros without a `debian/` tag are built again.
 - A deliberate rebuild: run the `build` workflow by hand with `series` and optionally `distros`.
 
 ### Test mode
