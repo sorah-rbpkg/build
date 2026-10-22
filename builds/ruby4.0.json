@@ -1,0 +1,19 @@
+{
+   "archs": [
+      "amd64",
+      "arm64"
+   ],
+   "commit": "51f86ee24374c9bc4924fbfb7d536e5835bac544",
+   "dist": "dist/4.0",
+   "distros": [
+      "jammy",
+      "noble",
+      "resolute",
+      "bookworm",
+      "trixie"
+   ],
+   "master": "master",
+   "repository": "sorah-rbpkg/ruby",
+   "source": "ruby4.0",
+   "test": true
+}

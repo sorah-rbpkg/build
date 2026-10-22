@@ -1,0 +1,42 @@
+amends "package://github.com/jdx/hk/releases/download/v2.8.0/hk@2.8.0#/Config.pkl"
+
+import "package://github.com/jdx/hk/releases/download/v2.8.0/hk@2.8.0#/Builtins.pkl"
+
+exclude = List("tmp/**")
+
+local linters = new Mapping<String, Step> {
+  ["jsonnet-generated"] {
+    glob = List("builds/**")
+    check = "bin/generate --check"
+    fix = "bin/generate"
+  }
+  ["shellcheck"] {
+    glob = List(".github/scripts/*.sh", "bin/generate")
+    check = "shellcheck {{files}}"
+  }
+  ["jactionlint"] = Builtins.jactionlint
+  ["zizmor"] = Builtins.zizmor
+  ["check-added-large-files"] = Builtins.check_added_large_files
+  ["check-merge-conflict"] = Builtins.check_merge_conflict
+  ["detect-private-key"] = Builtins.detect_private_key
+  ["mise"] = Builtins.mise
+  ["newlines"] = Builtins.newlines
+  ["pkl"] = Builtins.pkl
+  ["pkl-format"] = Builtins.pkl_format
+  ["trailing-whitespace"] = Builtins.trailing_whitespace
+}
+
+hooks {
+  ["pre-commit"] {
+    fix = true
+    stash = "git"
+    steps = linters
+  }
+  ["fix"] {
+    fix = true
+    steps = linters
+  }
+  ["check"] {
+    steps = linters
+  }
+}

@@ -1,0 +1,152 @@
+#!/usr/bin/env ruby
+# Usage: bin/plan [--since REV] [--distros a,b] [--test] [builds/SERIES.json ...]
+#
+# Prints the build targets as JSON: {"targets": [...], "origs": [...]}.
+# A distro whose debian/ tag already exists on the source repository is left out.
+require 'fileutils'
+require 'json'
+require 'open3'
+require 'optparse'
+require 'tmpdir'
+
+ROOT = File.expand_path('..', __dir__)
+BUILD_REPOSITORY = ENV.fetch('GITHUB_REPOSITORY', 'sorah-rbpkg/build')
+COMMITTERS_KEYRING = File.join(ROOT, 'keys', 'committers.asc')
+# Any other distro is taken to be an Ubuntu release.
+DEBIAN_CODENAMES = %w[stretch buster bullseye bookworm trixie forky duke]
+
+Series = Data.define(:file, :source, :repository, :master, :commit, :dist, :distros, :archs, :test) do
+  def self.load(path)
+    config = JSON.parse(File.read(path))
+    new(
+      file: path,
+      source: config.fetch('source'),
+      repository: config.fetch('repository'),
+      master: config.fetch('master'),
+      commit: config.fetch('commit'),
+      dist: config.fetch('dist'),
+      distros: config.fetch('distros'),
+      archs: config.fetch('archs'),
+      test: config.fetch('test'),
+    )
+  end
+
+  def url = "https://github.com/#{repository}.git"
+end
+
+def git(*args, dir: nil)
+  cmd = dir ? ['git', '-C', dir, *args] : ['git', *args]
+  out, status = Open3.capture2(*cmd)
+  raise "#{cmd.join(' ')} failed" unless status.success?
+  out
+end
+
+def git?(*args, dir:)
+  system('git', '-C', dir, *args, out: File::NULL, err: File::NULL)
+end
+
+def changed_series(since)
+  # A push that creates the branch has no previous commit to compare with.
+  return Dir[File.join(ROOT, 'builds/*.json')] if since.nil? || since.match?(/\A0+\z/)
+
+  git('diff', '--name-only', '--diff-filter=AM', since, 'HEAD', '--', 'builds/*.json', dir: ROOT)
+    .lines(chomp: true).map { File.join(ROOT, it) }
+end
+
+# Only a commit signed by a key in keys/committers.asc may be built.
+def verify_commit_signature(series, dir:)
+  Dir.mktmpdir('plan-gnupg') do |gnupghome|
+    env = {'GNUPGHOME' => gnupghome}
+    _, status = Open3.capture2e(env, 'gpg', '--batch', '--import', COMMITTERS_KEYRING)
+    raise "cannot import #{COMMITTERS_KEYRING}" unless status.success?
+    trusted = Open3.capture2(env, 'gpg', '--batch', '--with-colons', '--list-keys').first.scan(/^fpr:+(\h{40}):/).flatten
+
+    _, raw, _ = Open3.capture3(env, 'git', '-C', dir, 'verify-commit', '--raw', series.commit)
+    signer = raw[/^\[GNUPG:\] VALIDSIG .*?(\h{40})\s*$/, 1]
+    unless signer && trusted.include?(signer)
+      raise "#{series.file}: #{series.commit} is not signed by a key in #{File.basename(COMMITTERS_KEYRING)}"
+    end
+  end
+end
+
+# Same transform as sorah-debuild's debian/ tag naming (DEP-14).
+def tag_for(version)
+  "debian/#{version.gsub(/\.(?=\.|\z|lock\z)/, '.#').tr('~:', '_%')}"
+end
+
+def plan_series(series, distro_filter:, test:)
+  raise "#{series.file}: dist must start with dist/" unless series.dist.start_with?('dist/')
+  raise "#{series.file}: commit must be a full SHA" unless series.commit.match?(/\A\h{40}\z/)
+
+  dir = File.join(ROOT, 'tmp', 'plan', series.repository.tr('/', '_'))
+  git('init', '-q', '--bare', dir) unless File.directory?(dir)
+  git('fetch', '-q', '--filter=blob:none', '--no-tags', series.url, "+refs/heads/#{series.master}:refs/remotes/origin/#{series.master}", dir:)
+  unless git?('merge-base', '--is-ancestor', series.commit, "refs/remotes/origin/#{series.master}", dir:)
+    raise "#{series.file}: #{series.commit} is not on #{series.repository} #{series.master}"
+  end
+  verify_commit_signature(series, dir:)
+
+  head = git('cat-file', 'blob', "#{series.commit}:debian/changelog", dir:).lines.first
+  m = head.match(/\A(?<source>\S+) \((?<version>[^)]+)\)/) or raise "#{series.file}: cannot parse changelog: #{head}"
+  raise "#{series.file}: changelog source is #{m[:source]}, not #{series.source}" unless m[:source] == series.source
+  raise "#{series.file}: changelog version #{m[:version]} has no ~dist" unless m[:version].include?('~dist')
+
+  upstream_version = m[:version].sub(/\A\d+:/, '').sub(/-[^-]+\z/, '')
+  existing_tags = git('ls-remote', '--tags', '--refs', series.url, 'refs/tags/debian/*')
+    .lines(chomp: true).map { it.split("\t", 2).fetch(1).delete_prefix('refs/tags/') }
+
+  series.distros.filter_map do |distro|
+    next if distro_filter && !distro_filter.include?(distro)
+
+    deb_version = m[:version].sub('~dist', "~#{distro}")
+    tag = tag_for(deb_version)
+    if !test && existing_tags.include?(tag)
+      warn "#{series.source} #{distro}: #{tag} exists, skipping"
+      next
+    end
+
+    dist_branch = "#{series.dist}/#{distro}"
+    # Everything a test run writes goes under test/ of this repository instead of the source repository.
+    prefix = test ? 'test/' : ''
+    {
+      series_file: File.basename(series.file),
+      source: series.source,
+      repository: series.repository,
+      master: series.master,
+      commit: series.commit,
+      distro:,
+      dist_branch:,
+      stage_branch: "#{prefix}#{series.dist.sub(%r{\Adist/}, 'dist-stage/')}/#{distro}",
+      deb_version:,
+      upstream_version:,
+      tag:,
+      archs: series.archs,
+      orig_name: "#{series.source}_#{upstream_version}.orig.tar.gz",
+      orig_release: "#{prefix}orig/#{series.source}/#{upstream_version.tr('~:', '_%')}",
+      upstream_tag: "upstream/#{upstream_version.tr('~:', '_%')}",
+      image: "#{DEBIAN_CODENAMES.include?(distro) ? 'debian' : 'ubuntu'}:#{distro}",
+      test:,
+      release_repository: test ? BUILD_REPOSITORY : series.repository,
+      release_dist_branch: "#{prefix}#{dist_branch}",
+      release_tag: "#{prefix}#{tag}",
+    }
+  end
+end
+
+since = nil
+distro_filter = nil
+test = false
+OptionParser.new do |o|
+  o.on('--since REV') { since = it }
+  o.on('--distros LIST') { distro_filter = it.split(',').map(&:strip).reject(&:empty?) }
+  o.on('--test', 'Release into test/ of this repository, and rebuild released distros') { test = true }
+end.parse!(ARGV)
+
+files = ARGV.empty? ? changed_series(since) : ARGV.map { File.expand_path(it) }
+targets = files.sort.flat_map do |file|
+  series = Series.load(file)
+  plan_series(series, distro_filter:, test: test || series.test)
+end
+origs = targets.map { it.slice(:repository, :source, :upstream_version, :upstream_tag, :orig_name, :orig_release) }.uniq
+
+puts JSON.generate({targets:, origs:})

@@ -1,0 +1,19 @@
+[tools]
+ruby = "4.0.6"
+"aqua:jdx/hk" = "2.8.0"
+"aqua:apple/pkl" = "0.32.2"
+"github:jdx/jactionlint" = "2.3.0"
+"aqua:zizmorcore/zizmor" = "1.31.1"
+"aqua:koalaman/shellcheck" = "0.11.0"
+"aqua:sigstore/gitsign" = "0.18.0"
+"github:CertainLach/jrsonnet" = "0.4.2"
+
+[settings]
+disable_backends = ["asdf"]
+lockfile = true
+
+[settings.ruby]
+compile = false
+
+[tasks.pre-commit]
+run = "hk run pre-commit"
