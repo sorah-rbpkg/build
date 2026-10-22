@@ -28,6 +28,8 @@ APTLY_GPG_KEY = '805E57E2327EE86EB8180E0669CEB9D53F0F56A8'
 STSCAT_CONFIG = File.expand_path('~/.nkmi-deb-release.json')
 # Must stay in sync with .github/scripts/draft-release.js.
 RESIGNED_MARKER = '<!-- resigned-by:'
+# gh attestation verify takes a few seconds per file, mostly waiting on the network.
+ATTESTATION_JOBS = 8
 
 def signer_workflow(name) = "#{BUILD_REPOSITORY}/.github/workflows/#{name}"
 
@@ -209,11 +211,22 @@ class Publisher
       "--certificate-oidc-issuer=#{OIDC_ISSUER}", release.tag, chdir: File.dirname(release.git_dir))
     run(*git, 'merge-base', '--is-ancestor', "#{release.tag}^{commit}", "refs/remotes/origin/#{release.dist_branch}")
 
-    release.files.each do |file|
-      workflow = file.end_with?('.orig.tar.gz') ? 'build.yml' : '_distro.yml'
-      run(@env, 'gh', 'attestation', 'verify', file, '--repo', BUILD_REPOSITORY,
-        '--signer-workflow', signer_workflow(workflow), '--source-ref', 'refs/heads/main', out: File::NULL)
+    queue = Queue.new
+    release.files.each { queue << it }
+    queue.close
+    workers = Array.new(ATTESTATION_JOBS) do
+      Thread.new do
+        Thread.current.report_on_exception = false
+        while (file = queue.pop)
+          workflow = file.end_with?('.orig.tar.gz') ? 'build.yml' : '_distro.yml'
+          ok = system(@env, 'gh', 'attestation', 'verify', file, '--repo', BUILD_REPOSITORY,
+            '--signer-workflow', signer_workflow(workflow), '--source-ref', 'refs/heads/main', out: File::NULL)
+          raise "#{File.basename(file)}: attestation verification failed" unless ok
+          puts "  attested: #{File.basename(file)}"
+        end
+      end
     end
+    workers.each(&:join)
 
     [*release.changes_paths, release.dsc_path].each do |meta|
       parse_debian_metafile(File.read(meta)).fetch('Checksums-Sha256').each do |line|
