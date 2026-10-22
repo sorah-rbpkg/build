@@ -340,6 +340,11 @@ OptionParser.new do |o|
   end
 end.parse!(ARGV)
 
+# Runs share tmp/publish, and each clears a draft's directory before downloading into it.
+FileUtils.mkdir_p(File.join(ROOT, 'tmp', 'publish'))
+lock = File.open(File.join(ROOT, 'tmp', 'publish', '.lock'), File::RDWR | File::CREAT)
+abort 'another bin/publish is running' unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+
 # The DebReleaser token cannot see this repository's drafts, so a test uses your own gh login.
 token = test ? ENV['GH_TOKEN'] || capture('gh', 'auth', 'token').strip : github_token
 Publisher.new(repository:, prefix:, tags: ARGV, publish:, dry_run:, token:).run_all
