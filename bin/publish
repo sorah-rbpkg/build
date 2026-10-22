@@ -162,8 +162,10 @@ class Publisher
     run(@env, 'gh', 'release', 'download', tag, '--repo', @repository, '--dir', dir)
     restore_asset_names(dir)
 
-    git_dir = File.join(ROOT, 'tmp', 'publish', "#{@repository.tr('/', '_')}.git")
-    run('git', 'init', '-q', '--bare', git_dir) unless File.directory?(git_dir)
+    # gitsign cannot resolve tags in a bare repository.
+    work_dir = File.join(ROOT, 'tmp', 'publish', @repository.tr('/', '_'))
+    run('git', 'init', '-q', work_dir) unless File.directory?(work_dir)
+    git_dir = File.join(work_dir, '.git')
 
     files = Dir[File.join(dir, '*')].sort
     changes_paths = files.grep(/\.changes\z/)
@@ -185,7 +187,7 @@ class Publisher
       "refs/heads/#{release.dist_branch}:refs/remotes/origin/#{release.dist_branch}")
     run('gitsign', 'verify-tag',
       "--certificate-identity=https://github.com/#{signer_workflow('_distro.yml')}@refs/heads/main",
-      "--certificate-oidc-issuer=#{OIDC_ISSUER}", release.tag, chdir: release.git_dir)
+      "--certificate-oidc-issuer=#{OIDC_ISSUER}", release.tag, chdir: File.dirname(release.git_dir))
     run(*git, 'merge-base', '--is-ancestor', "#{release.tag}^{commit}", "refs/remotes/origin/#{release.dist_branch}")
 
     release.files.each do |file|
