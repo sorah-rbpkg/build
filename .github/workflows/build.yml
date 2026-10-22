@@ -1,0 +1,133 @@
+name: build
+
+# No concurrency group: cancelling a run would hide its remaining failures, and release.js
+# refuses to release a distro that another run has already released.
+# jactionlint ignore=concurrency-limits
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'builds/*.json'
+  workflow_dispatch:
+    inputs:
+      series:
+        description: Series under builds/, e.g. ruby4.0
+        required: true
+        type: string
+      distros:
+        description: Comma separated distros to build (default all unreleased)
+        required: false
+        type: string
+      test:
+        description: Release into test/ of this repository instead of the source repository, rebuilding released distros
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+      origs: ${{ steps.plan.outputs.origs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # bin/plan diffs against the commit before the push.
+          fetch-depth: 0
+
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        with:
+          install_args: ruby
+
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        id: plan
+        with:
+          script: await require('./.github/scripts/plan.js')({ context, core, exec })
+
+  orig:
+    name: orig (${{ matrix.orig.orig_name }})
+    needs: [plan]
+    if: needs.plan.outputs.origs != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        orig: ${{ fromJSON(needs.plan.outputs.origs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        id: check
+        env:
+          ORIG_RELEASE: ${{ matrix.orig.orig_release }}
+        with:
+          script: |
+            try {
+              await github.rest.repos.getReleaseByTag({ ...context.repo, tag: process.env.ORIG_RELEASE });
+              core.setOutput('exists', 'true');
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              core.setOutput('exists', 'false');
+            }
+
+      - name: generate
+        if: steps.check.outputs.exists == 'false'
+        run: .github/scripts/orig.sh
+        env:
+          REPOSITORY: ${{ matrix.orig.repository }}
+          SOURCE: ${{ matrix.orig.source }}
+          UPSTREAM_VERSION: ${{ matrix.orig.upstream_version }}
+          UPSTREAM_TAG: ${{ matrix.orig.upstream_tag }}
+          ORIG_NAME: ${{ matrix.orig.orig_name }}
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        if: steps.check.outputs.exists == 'false'
+        with:
+          subject-path: out/${{ matrix.orig.orig_name }}
+
+      # Every distro shares this file, and the apt repository's pool rejects a second orig
+      # of the same name with different bytes, so it is generated once and kept.
+      - name: publish
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          gh release create "$ORIG_RELEASE" "out/${ORIG_NAME}" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
+            --title "$ORIG_NAME" --notes "Generated from ${REPOSITORY} ${UPSTREAM_TAG}."
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ matrix.orig.repository }}
+          UPSTREAM_TAG: ${{ matrix.orig.upstream_tag }}
+          ORIG_NAME: ${{ matrix.orig.orig_name }}
+          ORIG_RELEASE: ${{ matrix.orig.orig_release }}
+
+  distro:
+    name: ${{ matrix.target.source }} ${{ matrix.target.distro }}${{ matrix.target.test && ' (test)' || '' }}
+    needs: [plan, orig]
+    if: needs.plan.outputs.targets != '[]'
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.targets) }}
+    uses: ./.github/workflows/_distro.yml # zizmor: ignore[self-repository]
+    with:
+      target: ${{ toJSON(matrix.target) }}
+    secrets:
+      STS_CAT_ENDPOINT: ${{ secrets.STS_CAT_ENDPOINT }}
