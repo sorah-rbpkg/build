@@ -67,6 +67,8 @@ bin/roll --repository sorah-rbpkg/rubygems-integration master
 - A packaging fix: commit it to `master`, then `bin/roll <branch>` and push. Only distros without a `debian/` tag are built again.
 - A deliberate rebuild: bump `try` in `builds/<series>.jsonnet` and push, or run the `build` workflow by hand with `series` and optionally `distros`. Either way, only distros without a `debian/` tag are built unless the run is in test mode.
 
+A push builds a series only when its `commit`, `try`, `distros` or `test` changes, or when the series is new. Changing any other field, such as `smoke`, builds nothing until one of those changes too.
+
 ### Test mode
 
 A series with `"test": true` runs every build in test mode, including those started by a push. Series start that way, and real releases begin with a reviewed change to `false`. Running the `build` workflow by hand with `test` checked does the same for one run.

@@ -54,7 +54,18 @@ def changed_series(since)
   return Dir[File.join(ROOT, 'gen/builds/*.json')] if since.nil? || since.match?(/\A0+\z/)
 
   git('diff', '--name-only', '--diff-filter=AM', since, 'HEAD', '--', 'gen/builds/*.json', dir: ROOT)
-    .lines(chomp: true).map { File.join(ROOT, it) }
+    .lines(chomp: true).select { build_requested?(since, it) }.map { File.join(ROOT, it) }
+end
+
+# Other fields change without asking for a build, which a test series would otherwise do for every distro.
+BUILD_FIELDS = %w[commit try distros test]
+
+def build_requested?(since, path)
+  old, status = Open3.capture2('git', '-C', ROOT, 'show', "#{since}:#{path}", err: File::NULL)
+  return true unless status.success?
+
+  new = JSON.parse(File.read(File.join(ROOT, path)))
+  JSON.parse(old).slice(*BUILD_FIELDS) != new.slice(*BUILD_FIELDS)
 end
 
 # Only commits and upstream tags signed by a key in keys/committers.asc may be built.
