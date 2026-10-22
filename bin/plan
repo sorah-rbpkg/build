@@ -100,6 +100,8 @@ def plan_series(series, distro_filter:, test:)
   upstream_commit = git('rev-parse', "refs/tags/#{upstream_tag}^{commit}", dir:).strip
   existing_tags = git('ls-remote', '--tags', '--refs', series.url, 'refs/tags/debian/*')
     .lines(chomp: true).map { it.split("\t", 2).fetch(1).delete_prefix('refs/tags/') }
+  existing_dists = git('ls-remote', '--heads', series.url, "refs/heads/#{series.dist}/*")
+    .lines(chomp: true).map { it.split("\t", 2).fetch(1).delete_prefix('refs/heads/') }
 
   series.distros.filter_map do |distro|
     next if distro_filter && !distro_filter.include?(distro)
@@ -126,6 +128,8 @@ def plan_series(series, distro_filter:, test:)
       commit: series.commit,
       distro:,
       dist_branch:,
+      # The first release of a distro creates its dist branch at the series commit.
+      new_dist: !existing_dists.include?(dist_branch),
       stage_branch: "#{prefix}dist-stage/#{series.id}/#{distro}",
       deb_version:,
       upstream_version:,

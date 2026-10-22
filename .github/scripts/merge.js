@@ -8,11 +8,17 @@ module.exports = async ({ core, exec }) => {
   const { dir, git } = await initSigningRepo(exec, 'merge');
 
   // A full fetch, because the first push of a stage branch carries the whole history.
-  await git('fetch', '--no-tags', `https://github.com/${target.repository}.git`,
-    `+refs/heads/${target.dist_branch}:refs/remotes/origin/${target.dist_branch}`, target.commit);
-  await git('checkout', '-q', '--detach', `refs/remotes/origin/${target.dist_branch}`);
-  await git('-c', 'commit.gpgsign=true', 'merge', '--no-ff',
-    '-m', `Merge branch '${target.master}' into ${target.dist_branch}`, target.commit);
+  const url = `https://github.com/${target.repository}.git`;
+  if (target.new_dist) {
+    core.info(`${target.dist_branch} does not exist yet; its first release stages ${target.commit} as is`);
+    await git('fetch', '--no-tags', url, target.commit);
+    await git('checkout', '-q', '--detach', target.commit);
+  } else {
+    await git('fetch', '--no-tags', url, `+refs/heads/${target.dist_branch}:refs/remotes/origin/${target.dist_branch}`, target.commit);
+    await git('checkout', '-q', '--detach', `refs/remotes/origin/${target.dist_branch}`);
+    await git('-c', 'commit.gpgsign=true', 'merge', '--no-ff',
+      '-m', `Merge branch '${target.master}' into ${target.dist_branch}`, target.commit);
+  }
 
   const head = fs.readFileSync(path.join(dir, 'debian/changelog'), 'utf8').split('\n', 1)[0];
   const version = head.match(/^\S+ \(([^)]+)\)/)[1].replace('~dist', `~${target.distro}`);

@@ -7,15 +7,18 @@ module.exports = async ({ core, exec }) => {
   const releaseUrl = `https://github.com/${target.release_repository}.git`;
   const { dir, git } = await initSigningRepo(exec, 'release');
 
-  await git('fetch', '--no-tags', `https://github.com/${target.repository}.git`,
-    `+refs/heads/${target.dist_branch}:refs/remotes/origin/${target.dist_branch}`);
   // By SHA rather than by stage branch, which a later run may have moved.
   await git('fetch', '--no-tags', `https://github.com/${process.env.GITHUB_REPOSITORY}.git`, stageSha);
 
-  const ancestor = await exec.exec('git', ['-C', dir, 'merge-base', '--is-ancestor',
-    `refs/remotes/origin/${target.dist_branch}`, stageSha], { ignoreReturnCode: true });
-  if (ancestor !== 0) {
-    throw new Error(`${target.dist_branch} on ${target.repository} has moved since ${stageSha} was staged`);
+  // A new dist branch is created by the push below, which fails if one has appeared meanwhile.
+  if (!target.new_dist) {
+    await git('fetch', '--no-tags', `https://github.com/${target.repository}.git`,
+      `+refs/heads/${target.dist_branch}:refs/remotes/origin/${target.dist_branch}`);
+    const ancestor = await exec.exec('git', ['-C', dir, 'merge-base', '--is-ancestor',
+      `refs/remotes/origin/${target.dist_branch}`, stageSha], { ignoreReturnCode: true });
+    if (ancestor !== 0) {
+      throw new Error(`${target.dist_branch} on ${target.repository} has moved since ${stageSha} was staged`);
+    }
   }
 
   // Test runs overwrite whatever an earlier test run pushed.
