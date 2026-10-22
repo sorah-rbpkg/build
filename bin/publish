@@ -31,14 +31,17 @@ RESIGNED_MARKER = '<!-- resigned-by:'
 
 def signer_workflow(name) = "#{BUILD_REPOSITORY}/.github/workflows/#{name}"
 
+# Leaves out the environment hash, which carries GH_TOKEN.
+def display_cmd(cmd) = cmd.grep_v(Hash).join(' ')
+
 def run(*cmd, **opts)
-  puts "  $ #{cmd.join(' ')}"
+  puts "  $ #{display_cmd(cmd)}"
   system(*cmd, exception: true, **opts)
 end
 
 def capture(*cmd, **opts)
   out, status = Open3.capture2(*cmd, **opts)
-  raise "#{cmd.join(' ')} failed" unless status.success?
+  raise "#{display_cmd(cmd)} failed" unless status.success?
   out
 end
 
