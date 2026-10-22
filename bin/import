@@ -1,0 +1,144 @@
+#!/usr/bin/env ruby
+# Usage: bin/import [--source-dir DIR] VERSION...
+#        bin/import --push [--source-dir DIR] VERSION...
+#
+# Imports the ruby-lang.org release of each VERSION into a local checkout of sorah-rbpkg/ruby, ../ruby by
+# default: gbp import-orig puts it on upstream-N.M with a signed upstream/<version> tag and merges it into
+# the series' debian branch, then a "releng" commit adds the changelog entry. Nothing is pushed.
+#
+# --push pushes those branches and tags after showing what they add.
+require 'date'
+require 'digest'
+require 'fileutils'
+require 'net/http'
+require 'open3'
+require 'optparse'
+require 'yaml'
+
+ROOT = File.expand_path('..', __dir__)
+REPOSITORY = 'sorah-rbpkg/ruby'
+# Kept in the www.ruby-lang.org repository, apart from the server that hosts the tarballs.
+RELEASES_URL = 'https://raw.githubusercontent.com/ruby/www.ruby-lang.org/master/_data/releases.yml'
+REVISION = '0nkmi1'
+
+Import = Data.define(:version, :series, :branch) do
+  def upstream_version = version.tr('-', '~')
+  def source = "ruby#{series}"
+  def upstream_branch = "upstream-#{series}"
+  def upstream_tag = "upstream/#{upstream_version.tr('~:', '_%')}"
+  def deb_version = "#{upstream_version}-#{REVISION}"
+end
+
+def run(*cmd, **opts)
+  puts "  $ #{cmd.grep_v(Hash).join(' ')}"
+  system(*cmd, exception: true, **opts)
+end
+
+def capture(*cmd, **opts)
+  out, status = Open3.capture2(*cmd, **opts)
+  raise "#{cmd.join(' ')} failed" unless status.success?
+  out
+end
+
+def fetch(url)
+  res = Net::HTTP.get_response(URI(url))
+  raise "GET #{url}: #{res.code}" unless res.is_a?(Net::HTTPSuccess)
+  res.body
+end
+
+push = false
+source_dir = File.expand_path('../ruby', ROOT)
+OptionParser.new do |o|
+  o.on('--push', 'Push what an earlier run imported') { push = true }
+  o.on('--source-dir DIR', 'Local checkout of sorah-rbpkg/ruby') { source_dir = File.expand_path(it) }
+end.parse!(ARGV)
+abort 'Usage: bin/import [--push] [--source-dir DIR] VERSION...' if ARGV.empty?
+abort "#{source_dir} is not a checkout of #{REPOSITORY}; pass --source-dir" unless File.directory?(File.join(source_dir, '.git'))
+
+git = ->(*args) { capture('git', *args, chdir: source_dir) }
+git_ok = ->(*args) { system('git', *args, chdir: source_dir, out: File::NULL, err: File::NULL) }
+abort "#{source_dir} has uncommitted changes" unless git.('status', '--porcelain', '--untracked-files=no').empty?
+run('git', 'fetch', '-q', '--tags', 'origin', chdir: source_dir)
+
+imports = ARGV.map do |version|
+  series = version[/\A(\d+\.\d+)\./, 1] or abort "#{version} is not a ruby version"
+  # The newest series lives on master, the others on master-N.M.
+  branch = ['master', "master-#{series}"].find do |b|
+    git_ok.('rev-parse', '--verify', '-q', "refs/remotes/origin/#{b}") &&
+      git.('show', "refs/remotes/origin/#{b}:debian/changelog").start_with?("ruby#{series} ")
+  end
+  abort "no debian branch of #{REPOSITORY} holds ruby#{series}" unless branch
+  Import.new(version:, series:, branch:)
+end
+abort 'one version per series' unless imports.map(&:series).uniq.size == imports.size
+
+if push
+  imports.each do |imp|
+    abort "#{imp.upstream_tag} does not exist; run bin/import first" unless git_ok.('rev-parse', '--verify', '-q', "refs/tags/#{imp.upstream_tag}")
+    git.('verify-tag', imp.upstream_tag)
+    head = git.('show', "refs/heads/#{imp.branch}:debian/changelog").lines.first
+    abort "#{imp.branch} is at #{head.strip}, not #{imp.deb_version}~dist" unless head.include?("(#{imp.deb_version}~dist)")
+  end
+
+  refs = [*imports.flat_map { [it.branch, it.upstream_branch] }, 'pristine-tar'].uniq
+  refs.each do |ref|
+    puts "#{ref}:"
+    puts git.('log', '--format=  %h %G? %s', "refs/remotes/origin/#{ref}..refs/heads/#{ref}")
+  end
+  puts 'tags:', *imports.map { "  #{it.upstream_tag}" }
+  print "Push these to #{git.('remote', 'get-url', 'origin').strip}? [y/N] "
+  abort 'Not pushed' unless $stdin.gets&.strip == 'y'
+  # Without --force, so each branch only fast-forwards.
+  run('git', 'push', '--atomic', 'origin', *refs.map { "refs/heads/#{it}" }, *imports.map { "refs/tags/#{it.upstream_tag}" },
+    chdir: source_dir)
+  puts "Next: bin/roll #{imports.map(&:branch).join(' ')}"
+  exit
+end
+
+releases = YAML.safe_load(fetch(RELEASES_URL), permitted_classes: [Date])
+imports.each do |imp|
+  abort "#{imp.upstream_tag} already exists" if git_ok.('rev-parse', '--verify', '-q', "refs/tags/#{imp.upstream_tag}")
+  [imp.branch, imp.upstream_branch, 'pristine-tar'].each do |b|
+    remote = git.('rev-parse', "refs/remotes/origin/#{b}").strip
+    if git_ok.('rev-parse', '--verify', '-q', "refs/heads/#{b}")
+      local = git.('rev-parse', "refs/heads/#{b}").strip
+      abort "#{b} is at #{local} locally but at #{remote} on origin" unless local == remote
+    else
+      git.('branch', '--track', b, "refs/remotes/origin/#{b}")
+    end
+  end
+end
+
+dir = File.join(ROOT, 'tmp', 'import')
+FileUtils.mkdir_p(dir)
+env = {
+  'DEBFULLNAME' => ENV['DEBFULLNAME'] || git.('config', 'user.name').strip,
+  'DEBEMAIL' => ENV['DEBEMAIL'] || git.('config', 'user.email').strip,
+}
+imports.each do |imp|
+  puts "=> #{imp.source} #{imp.version} on #{imp.branch}"
+  release = releases.find { it.fetch('version') == imp.version } or abort "ruby #{imp.version} is not in #{RELEASES_URL}"
+  url = release.fetch('url').fetch('gz')
+  tarball = File.join(dir, File.basename(url))
+  File.binwrite(tarball, fetch(url))
+  sha256 = Digest::SHA256.file(tarball).hexdigest
+  abort "#{url}: sha256 is #{sha256}, not #{release.fetch('sha256').fetch('gz')}" unless sha256 == release.fetch('sha256').fetch('gz')
+
+  run('git', 'checkout', '-q', imp.branch, chdir: source_dir)
+  # debian/gbp.conf names branches of an older series, so they are given here.
+  # The orig symlink would land next to the checkout, outside of it.
+  run('gbp', 'import-orig', '--no-interactive', '--pristine-tar', '--sign-tags', '--no-symlink-orig',
+    "--upstream-branch=#{imp.upstream_branch}", "--debian-branch=#{imp.branch}",
+    '--upstream-tag=upstream/%(version)s', "--upstream-version=#{imp.upstream_version}", tarball, chdir: source_dir)
+  run(env, 'dch', '--newversion', "#{imp.deb_version}~dist", '--distribution', 'unstable', '--force-distribution',
+    imp.version, chdir: source_dir)
+  run('git', 'commit', '-q', '-m', "releng #{imp.deb_version}", '--', 'debian/changelog', chdir: source_dir)
+
+  # The same orig the build generates, checked as the build checks it.
+  orig = File.join(dir, "#{imp.source}_#{imp.upstream_version}.orig.tar.gz")
+  archive = "git archive --format=tar --prefix #{imp.source}-#{imp.upstream_version}/ #{imp.upstream_tag} | gzip -n"
+  File.binwrite(orig, capture('bash', '-o', 'pipefail', '-c', archive, chdir: source_dir, binmode: true))
+  run(File.join(ROOT, 'bin', 'verify-orig'), orig, imp.upstream_version)
+end
+
+puts "Review #{source_dir}, then: bin/import --push #{imports.map(&:version).join(' ')}"

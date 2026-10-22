@@ -6,7 +6,16 @@ This repository builds the Debian packages of [sorah-rbpkg/ruby](https://github.
 
 ### Releasing a new version
 
-Prepare the release on `master` or `master-N.M` of sorah-rbpkg/ruby with `gbp import-orig`, and push it with its signed `upstream/<version>` tag. Then point the series at it, check the commits, and push them to `main` here, which starts the build:
+Import the release into your checkout of sorah-rbpkg/ruby, `../ruby` by default, review it, and push it:
+
+```
+bin/import 4.0.9 3.4.12                      # one version per series
+bin/import --push 4.0.9 3.4.12
+```
+
+`bin/import` downloads each release from ruby-lang.org and checks its sha256 against [ruby/www.ruby-lang.org](https://github.com/ruby/www.ruby-lang.org/blob/master/_data/releases.yml). It runs `gbp import-orig` onto `upstream-N.M` with a signed `upstream/<version>` tag and pristine-tar data, and merges it into `master` or `master-N.M`, whichever holds the series. It then commits the changelog entry as `releng <version>-0nkmi1` and checks the orig the build would generate with `bin/verify-orig`. `bin/import --push` shows the new commits on each of those branches and `pristine-tar`, then pushes them and the tags in one atomic push once you confirm.
+
+Then point the series at the release, check the commits, and push them to `main` here, which starts the build:
 
 ```
 bin/roll master                              # the series on master, at its tip on GitHub
