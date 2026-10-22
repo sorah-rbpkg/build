@@ -89,6 +89,7 @@ git push
 ```
 bin/publish                                  # every draft on sorah-rbpkg/ruby
 bin/publish debian/4.0.8-0nkmi1_noble        # only this one
+bin/publish --dry-run                        # only verify; changes nothing
 bin/publish --no-publish                     # stop after re-signing
 ```
 

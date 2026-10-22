@@ -1,10 +1,10 @@
 #!/usr/bin/env ruby
-# Usage: bin/publish [--no-publish] [--test] [--repository OWNER/REPO] [TAG ...]
+# Usage: bin/publish [--dry-run] [--no-publish] [--test] [--repository OWNER/REPO] [TAG ...]
 #
 # Takes the draft releases that the build workflow left on the source repository, verifies
 # what CI produced, re-signs the tag and .changes with your GPG key, adds the packages to
 # aptly, and publishes the release. Every phase is skipped when already done, so a run that
-# failed halfway can simply be repeated.
+# failed halfway can simply be repeated. --dry-run only verifies, and changes nothing.
 require 'bundler/inline'
 gemfile do
   source 'https://rubygems.org'
@@ -121,11 +121,12 @@ Release = Data.define(:repository, :prefix, :tag, :dir, :git_dir, :changes_paths
 end
 
 class Publisher
-  def initialize(repository:, prefix:, tags:, publish:, token:)
+  def initialize(repository:, prefix:, tags:, publish:, dry_run:, token:)
     @repository = repository
     @prefix = prefix
     @tags = tags
     @publish = publish
+    @dry_run = dry_run
     @token = token
     @fingerprint = gpg_fingerprint
     @env = {'GH_TOKEN' => @token}
@@ -149,6 +150,14 @@ class Publisher
 
     if draft.fetch('body').include?("#{RESIGNED_MARKER} #{@fingerprint}")
       puts ' * already re-signed, skipping verification'
+    elsif @dry_run
+      if signed?(release, draft)
+        puts ' * would resume an interrupted re-sign'
+      else
+        verify(release)
+        puts ' * would re-sign'
+      end
+      puts ' * would push the re-signed tag and files'
     else
       if signed?(release, draft)
         puts ' * resuming an interrupted re-sign'
@@ -159,7 +168,13 @@ class Publisher
       end
       push_signed(release)
     end
-    publish(release) if @publish
+    return unless @publish
+
+    if @dry_run
+      puts ' * would publish'
+    else
+      publish(release)
+    end
   end
 
   def view(tag)
@@ -295,10 +310,12 @@ class Publisher
 end
 
 publish = true
+dry_run = false
 repository = 'sorah-rbpkg/ruby'
 prefix = ''
 test = false
 OptionParser.new do |o|
+  o.on('-n', '--dry-run', 'Only verify, without signing, pushing or publishing') { dry_run = true }
   o.on('--no-publish', 'Stop after re-signing') { publish = false }
   o.on('--repository OWNER/REPO') { repository = it }
   o.on('--test', 'Work on the test/ releases of a test run, and never publish') do
@@ -311,4 +328,4 @@ end.parse!(ARGV)
 
 # The DebReleaser token cannot see this repository's drafts, so a test uses your own gh login.
 token = test ? ENV['GH_TOKEN'] || capture('gh', 'auth', 'token').strip : github_token
-Publisher.new(repository:, prefix:, tags: ARGV, publish:, token:).run_all
+Publisher.new(repository:, prefix:, tags: ARGV, publish:, dry_run:, token:).run_all
