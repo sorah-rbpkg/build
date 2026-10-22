@@ -116,20 +116,18 @@ jobs:
 
       # Every distro shares this file, and the apt repository's pool rejects a second orig
       # of the same name with different bytes, so it is generated once and kept.
-      - name: publish
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        name: publish
         if: steps.check.outputs.exists == 'false'
-        run: |
-          gh release create "$ORIG_RELEASE" "out/${ORIG_NAME}" \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
-            --title "$ORIG_NAME" --notes "Generated from ${REPOSITORY} ${UPSTREAM_TAG} (${UPSTREAM_COMMIT}). Attestation: ${ATTESTATION_URL}"
         env:
-          GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ matrix.orig.repository }}
           UPSTREAM_TAG: ${{ matrix.orig.upstream_tag }}
           UPSTREAM_COMMIT: ${{ matrix.orig.upstream_commit }}
           ORIG_NAME: ${{ matrix.orig.orig_name }}
           ORIG_RELEASE: ${{ matrix.orig.orig_release }}
           ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+        with:
+          script: await require('./.github/scripts/orig-release.js')({ github, context, core })
 
   distro:
     name: ${{ matrix.target.source }} ${{ matrix.target.distro }}${{ matrix.target.test && ' (test)' || '' }}

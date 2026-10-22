@@ -2,7 +2,7 @@
 // The body follows the layout sorah-deb-release writes, which bin/publish parses back.
 const fs = require('fs');
 const path = require('path');
-const { assetName } = require('./lib.js');
+const { uploadAsset } = require('./lib.js');
 
 // Written into the release body by bin/publish.
 const RESIGNED_MARKER = '<!-- resigned-by:';
@@ -44,12 +44,14 @@ module.exports = async ({ github, core }) => {
 
   const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
   let release = releases.find((r) => r.tag_name === tag);
-  if (release && target.test) {
+  const resigned = release && (release.body || '').includes(RESIGNED_MARKER);
+  // A test run replaces what an earlier one finished, and resumes what it left unfinished.
+  if (release && target.test && (resigned || !release.draft)) {
     await github.rest.repos.deleteRelease({ owner, repo, release_id: release.id });
     release = undefined;
   }
   if (release && !release.draft) throw new Error(`${tag} is already published on ${target.release_repository}`);
-  if (release && (release.body || '').includes(RESIGNED_MARKER)) {
+  if (resigned && release) {
     throw new Error(`${tag} has been re-signed by bin/publish; uploading would replace its signed files`);
   }
 
@@ -59,17 +61,8 @@ module.exports = async ({ github, core }) => {
     ({ data: release } = await github.rest.repos.createRelease({ owner, repo, tag_name: tag, name: tag, body, draft: true }));
   }
 
-  const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id: release.id, per_page: 100 });
   for (const file of files) {
-    const name = assetName(file);
-    const existing = assets.find((a) => a.name === name);
-    if (existing) await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: existing.id });
-    const data = fs.readFileSync(file);
-    await github.rest.repos.uploadReleaseAsset({
-      owner, repo, release_id: release.id, name, data,
-      headers: { 'content-type': 'application/octet-stream', 'content-length': data.length },
-    });
-    core.info(`uploaded ${name}`);
+    await uploadAsset(github, core, { owner, repo, releaseId: release.id, file });
   }
   core.info(release.html_url);
 };
