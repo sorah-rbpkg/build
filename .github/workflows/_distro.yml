@@ -151,8 +151,22 @@ jobs:
           DISTRO: ${{ fromJSON(inputs.target).distro }}
           ARCH: ${{ matrix.arch }}
 
+  # A failed smoke leaves the release to the approver, so the built artifacts are not thrown away.
+  smoke-warn:
+    needs: [smoke]
+    if: ${{ !cancelled() && needs.smoke.result == 'failure' }}
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - run: echo "::warning title=smoke failed::${SOURCE} ${DISTRO} failed its smoke test; check it before approving the release"
+        env:
+          SOURCE: ${{ fromJSON(inputs.target).source }}
+          DISTRO: ${{ fromJSON(inputs.target).distro }}
+
   release:
-    needs: [merge, smoke]
+    needs: [merge, smoke, smoke-warn]
+    if: ${{ !cancelled() && needs.merge.result == 'success' && (needs.smoke.result == 'success' || needs.smoke-warn.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment:
