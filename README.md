@@ -52,12 +52,13 @@ Its GitHub token comes from `GH_TOKEN`, or from sts-cat through the `DebReleaser
 }
 ```
 
-### Releasing ruby-defaults
+### Releasing ruby-defaults and rubygems-integration
 
-[sorah-rbpkg/ruby-defaults](https://github.com/sorah-rbpkg/ruby-defaults) is a native package, built without an orig tarball. It has one series per default Ruby, `builds/ruby-defaults<N.M>.jsonnet`, each built from its own branch. Commit the changelog entry, `1:N.M+0nkmiX~dist`, to that branch, push it, and roll it like any other series:
+[sorah-rbpkg/ruby-defaults](https://github.com/sorah-rbpkg/ruby-defaults) and [sorah-rbpkg/rubygems-integration](https://github.com/sorah-rbpkg/rubygems-integration) are native packages, built without an orig tarball. ruby-defaults has one series per default Ruby, `builds/ruby-defaults<N.M>.jsonnet`, each built from its own branch; rubygems-integration has one, built from `master`. Commit the changelog entry with a `~dist` version to that branch, push it, and roll it like any other series:
 
 ```
 bin/roll --repository sorah-rbpkg/ruby-defaults master master-3.4
+bin/roll --repository sorah-rbpkg/rubygems-integration master
 ```
 
 ### Handling failed builds
