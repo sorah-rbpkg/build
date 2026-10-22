@@ -37,7 +37,7 @@ bin/publish --no-publish                     # stop after re-signing
 
 1. Verifies the gitsign signature of the tag against `_distro.yml` on `main`, that the tag is on `dist/N.M/<distro>`, the build attestation of every asset, and the checksums in the `.changes` and `.dsc`.
 2. Re-signs the tag with `git tag -s`, and the `.changes`, `.dsc` and `.buildinfo` with `sorah-debsign`, then replaces them on the draft.
-3. Once every draft is re-signed, adds them all with `aptly repo add`, runs `aptly publish update` once per distro, and only then publishes the releases, which makes them immutable.
+3. Once every draft is re-signed, adds them all with `aptly repo add`, runs `aptly publish update` once per distro, purges the distros' index from cache.ruby-lang.org with `RB_PURGE_TOKEN`, and only then publishes the releases, which makes them immutable.
 
 Its GitHub token comes from `GH_TOKEN`, or from sts-cat through the `DebReleaser` role:
 

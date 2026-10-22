@@ -25,6 +25,7 @@ OIDC_ISSUER = 'https://token.actions.githubusercontent.com'
 APTLY_REPO_PREFIX = 'sorah-ruby'
 APTLY_ENDPOINT = 's3:sorah-ruby:'
 APTLY_GPG_KEY = '805E57E2327EE86EB8180E0669CEB9D53F0F56A8'
+APT_URL = 'https://cache.ruby-lang.org/lab/sorah/deb'
 STSCAT_CONFIG = File.expand_path('~/.nkmi-deb-release.json')
 # Must stay in sync with .github/scripts/draft-release.js.
 RESIGNED_MARKER = '<!-- resigned-by:'
@@ -34,6 +35,13 @@ ATTESTATION_JOBS = 8
 DOWNLOAD_JOBS = 4
 
 def signer_workflow(name) = "#{BUILD_REPOSITORY}/.github/workflows/#{name}"
+
+def index_urls(distro)
+  files = %w[InRelease Release Release.gpg]
+  %w[binary-amd64 binary-arm64].each { |dir| files.push(*%w[Packages Packages.gz Packages.bz2 Release].map { "main/#{dir}/#{it}" }) }
+  files.push(*%w[Sources Sources.gz Sources.bz2 Release].map { "main/source/#{it}" })
+  files.map { "#{APT_URL}/dists/#{distro}/#{it}" }
+end
 
 # Leaves out the environment hash, which carries GH_TOKEN.
 def display_cmd(cmd) = cmd.grep_v(Hash).join(' ')
@@ -303,9 +311,11 @@ class Publisher
   # Releases leave draft only after every distro is published, as that makes them immutable.
   def publish(releases)
     puts '=> publishing'
+    distros = releases.map(&:distro).uniq
     if @dry_run
       releases.each { puts " * would add #{it.tag} to #{APTLY_REPO_PREFIX}-#{it.distro}" }
-      releases.map(&:distro).uniq.each { puts " * would publish #{it}" }
+      distros.each { puts " * would publish #{it}" }
+      distros.flat_map { index_urls(it) }.each { puts " * would purge #{it}" }
       releases.each { puts " * would release #{it.tag}" }
       return
     end
@@ -314,11 +324,22 @@ class Publisher
       check_signed(release)
       run('aptly', 'repo', 'add', "#{APTLY_REPO_PREFIX}-#{release.distro}", *release.aptly_files)
     end
-    releases.map(&:distro).uniq.each do |distro|
+    distros.each do |distro|
       run('aptly', 'publish', 'update', "-gpg-key=#{APTLY_GPG_KEY}", distro, APTLY_ENDPOINT)
     end
+    purge(distros.flat_map { index_urls(it) })
     releases.each do |release|
       run(@env, 'gh', 'release', 'edit', release.tag, '--repo', @repository, '--draft=false')
+    end
+  end
+
+  # cache.ruby-lang.org keeps serving the previous index until it is purged.
+  def purge(urls)
+    headers = {'x-purge-token' => ENV['RB_PURGE_TOKEN'], 'user-agent' => 'sorah-rbpkg-build-publish'}
+    urls.zip(HTTPX.request('PURGE', urls, headers:)).each do |url, resp|
+      raise "PURGE #{url}: #{resp.error.message}" if resp.error
+      raise "PURGE #{url}: HTTP #{resp.status}" unless (200..299).cover?(resp.status)
+      puts "  purged #{url}"
     end
   end
 
