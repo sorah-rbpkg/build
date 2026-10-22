@@ -33,11 +33,11 @@ bin/publish --dry-run                        # only verify; changes nothing
 bin/publish --no-publish                     # stop after re-signing
 ```
 
-`bin/publish` works through each draft in three steps, skipping any that is already done, so a failed run can be repeated:
+`bin/publish` takes the drafts through three steps, skipping any that is already done, so a failed run can be repeated:
 
 1. Verifies the gitsign signature of the tag against `_distro.yml` on `main`, that the tag is on `dist/N.M/<distro>`, the build attestation of every asset, and the checksums in the `.changes` and `.dsc`.
 2. Re-signs the tag with `git tag -s`, and the `.changes`, `.dsc` and `.buildinfo` with `sorah-debsign`, then replaces them on the draft.
-3. Runs `aptly repo add` and `aptly publish update`, then publishes the release.
+3. Once every draft is re-signed, adds them all with `aptly repo add`, runs `aptly publish update` once per distro, and only then publishes the releases, which makes them immutable.
 
 Its GitHub token comes from `GH_TOKEN`, or from sts-cat through the `DebReleaser` role:
 

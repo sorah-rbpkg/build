@@ -168,7 +168,9 @@ class Publisher
 
     releases = {}
     each_parallel(drafts, DOWNLOAD_JOBS) { releases[it] = download(it) }
-    drafts.each { process(releases.fetch(it)) }
+    releases = drafts.map { releases.fetch(it) }
+    releases.each { process(it) }
+    publish(releases) if @publish
   end
 
   def process(release)
@@ -195,13 +197,6 @@ class Publisher
         sign(release, draft)
       end
       push_signed(release)
-    end
-    return unless @publish
-
-    if @dry_run
-      puts ' * would publish'
-    else
-      publish(release)
     end
   end
 
@@ -305,8 +300,29 @@ class Publisher
     run(@env, 'gh', 'release', 'edit', release.tag, '--repo', @repository, '--notes-file', notes)
   end
 
-  def publish(release)
-    puts ' * publishing'
+  # Releases leave draft only after every distro is published, as that makes them immutable.
+  def publish(releases)
+    puts '=> publishing'
+    if @dry_run
+      releases.each { puts " * would add #{it.tag} to #{APTLY_REPO_PREFIX}-#{it.distro}" }
+      releases.map(&:distro).uniq.each { puts " * would publish #{it}" }
+      releases.each { puts " * would release #{it.tag}" }
+      return
+    end
+
+    releases.each do |release|
+      check_signed(release)
+      run('aptly', 'repo', 'add', "#{APTLY_REPO_PREFIX}-#{release.distro}", *release.aptly_files)
+    end
+    releases.map(&:distro).uniq.each do |distro|
+      run('aptly', 'publish', 'update', "-gpg-key=#{APTLY_GPG_KEY}", distro, APTLY_ENDPOINT)
+    end
+    releases.each do |release|
+      run(@env, 'gh', 'release', 'edit', release.tag, '--repo', @repository, '--draft=false')
+    end
+  end
+
+  def check_signed(release)
     run('git', '--git-dir', release.git_dir, 'fetch', '-q', '--filter=blob:none', '--no-tags', '--force', @url,
       "refs/tags/#{release.tag}:refs/tags/#{release.tag}")
     _, status_output, _ = Open3.capture3('git', '--git-dir', release.git_dir, 'verify-tag', '--raw', release.tag)
@@ -316,10 +332,6 @@ class Publisher
       _, status_output, _ = Open3.capture3('gpg', '--status-fd', '2', '--verify', file)
       raise "#{File.basename(file)} is not signed by #{@fingerprint}" unless valid_signers(status_output).include?(@fingerprint)
     end
-
-    run('aptly', 'repo', 'add', "#{APTLY_REPO_PREFIX}-#{release.distro}", *release.aptly_files)
-    run('aptly', 'publish', 'update', "-gpg-key=#{APTLY_GPG_KEY}", release.distro, APTLY_ENDPOINT)
-    run(@env, 'gh', 'release', 'edit', release.tag, '--repo', @repository, '--draft=false')
   end
 end
 
