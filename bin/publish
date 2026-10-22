@@ -20,6 +20,7 @@ require 'fileutils'
 require 'json'
 require 'open3'
 require 'optparse'
+require 'pathname'
 require 'aws-sdk-core'
 require 'httpx'
 
@@ -51,7 +52,8 @@ end
 def display_cmd(cmd) = cmd.grep_v(Hash).join(' ')
 
 def run(*cmd, **opts)
-  puts "  $ #{display_cmd(cmd)}"
+  dir = "#{Pathname(opts[:chdir]).relative_path_from(Dir.pwd)} " if opts[:chdir]
+  puts "  #{dir}$ #{display_cmd(cmd)}"
   system(*cmd, exception: true, **opts)
 end
 
