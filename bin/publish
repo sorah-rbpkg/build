@@ -2,7 +2,7 @@
 # Usage: bin/publish [--dry-run] [--no-publish] [--test] [--repository OWNER/REPO] [--dockerfiles-dir DIR] [TAG ...]
 #        bin/publish --relay-only [--dry-run] [--dockerfiles-dir DIR]
 #
-# Takes the draft releases that the build workflow left on the source repository, verifies
+# Takes the draft releases that the build workflow left on the source repositories, verifies
 # what CI produced, re-signs the tag and .changes with your GPG key, adds the packages to
 # aptly, and publishes the release. Every phase is skipped when already done, so a run that
 # failed halfway can simply be repeated. --dry-run only verifies, and changes nothing.
@@ -146,8 +146,18 @@ def restore_asset_names(dir)
   end
 end
 
+# The series build files, each naming a source package, the repository it comes from and its dist branches.
+SERIES = Dir[File.join(ROOT, 'gen', 'builds', '*.json')].sort.map { JSON.parse(File.read(it)) }
+
 Release = Data.define(:repository, :prefix, :tag, :dir, :git_dir, :changes_paths, :dsc_path, :files, :source, :version, :distro) do
-  def dist_branch = "#{prefix}dist/#{source.delete_prefix('ruby')}/#{distro}"
+  def url = "https://github.com/#{repository}.git"
+  # A test release lives in this repository, under test/<repo>/ of its source repository.
+  def source_repository = prefix.empty? ? repository : "#{repository.split('/').first}/#{prefix[%r{\Atest/([^/]+)/}, 1]}"
+  # Several series may build one source package, as ruby-defaults does with one per default Ruby.
+  def dist_branches
+    SERIES.select { it.fetch('repository') == source_repository && it.fetch('source') == source }
+      .map { "#{prefix}#{it.fetch('dist')}/#{distro}" }.uniq
+  end
   def message = "#{source} Debian release #{version}"
   def changes_by_arch = changes_paths.to_h { [it[/_([a-z0-9]+)\.changes\z/, 1], File.read(it)] }
   def dsc = File.read(dsc_path)
@@ -156,8 +166,8 @@ Release = Data.define(:repository, :prefix, :tag, :dir, :git_dir, :changes_paths
 end
 
 class Publisher
-  def initialize(repository:, prefix:, tags:, publish:, dry_run:, token:, relay:)
-    @repository = repository
+  def initialize(repositories:, prefix:, tags:, publish:, dry_run:, token:, relay:)
+    @repositories = repositories
     @relay = relay
     @prefix = prefix
     @tags = tags
@@ -166,26 +176,22 @@ class Publisher
     @token = token
     @fingerprint = gpg_fingerprint
     @env = {'GH_TOKEN' => @token}
-    @url = "https://github.com/#{repository}.git"
   end
 
   def run_all
     @relay&.check
-    drafts = JSON.parse(capture(@env, 'gh', 'release', 'list', '--repo', @repository, '--limit', '200', '--json', 'tagName,isDraft'))
-      .select { it.fetch('isDraft') && it.fetch('tagName').match?(%r{\A#{@prefix}debian/}) }
-      .map { it.fetch('tagName') }
-    drafts &= @tags unless @tags.empty?
+    drafts = @repositories.flat_map do |repository|
+      JSON.parse(capture(@env, 'gh', 'release', 'list', '--repo', repository, '--limit', '200', '--json', 'tagName,isDraft'))
+        .select { it.fetch('isDraft') && it.fetch('tagName').match?(%r{\A#{@prefix}debian/}) }
+        .map { [repository, it.fetch('tagName')] }
+    end
+    drafts.select! { @tags.include?(it.last) } unless @tags.empty?
     abort 'No draft releases to publish' if drafts.empty?
     drafts.sort!
-    puts 'Drafts:', *drafts.map { "  #{it}" }
-
-    # gitsign cannot resolve tags in a bare repository.
-    work_dir = File.join(ROOT, 'tmp', 'publish', @repository.tr('/', '_'))
-    run('git', 'init', '-q', work_dir) unless File.directory?(work_dir)
-    @git_dir = File.join(work_dir, '.git')
+    puts 'Drafts:', *drafts.map { |repository, tag| "  #{repository} #{tag}" }
 
     releases = {}
-    each_parallel(drafts, DOWNLOAD_JOBS) { releases[it] = download(it) }
+    each_parallel(drafts, DOWNLOAD_JOBS) { |repository, tag| releases[[repository, tag]] = download(repository, tag) }
     releases = drafts.map { releases.fetch(it) }
     releases.each { process(it) }
     return unless @publish
@@ -197,7 +203,7 @@ class Publisher
   def process(release)
     tag = release.tag
     puts "=> #{tag}"
-    draft = view(tag)
+    draft = view(release)
 
     if draft.fetch('body').include?("#{RESIGNED_MARKER} #{@fingerprint}")
       puts ' * already re-signed, skipping verification'
@@ -221,8 +227,8 @@ class Publisher
     end
   end
 
-  def view(tag)
-    JSON.parse(capture(@env, 'gh', 'release', 'view', tag, '--repo', @repository, '--json', 'id,isDraft,body'))
+  def view(release)
+    JSON.parse(capture(@env, 'gh', 'release', 'view', release.tag, '--repo', release.repository, '--json', 'id,isDraft,body'))
   end
 
   # Kept until the release is published, so an interrupted push or upload can be repeated.
@@ -235,10 +241,14 @@ class Publisher
     false
   end
 
-  def download(tag)
+  def download(repository, tag)
+    # gitsign cannot resolve tags in a bare repository.
+    work_dir = File.join(ROOT, 'tmp', 'publish', repository.tr('/', '_'))
+    run('git', 'init', '-q', work_dir) unless File.directory?(work_dir)
+
     dir = File.join(ROOT, 'tmp', 'publish', tag.tr('/', '_'))
     FileUtils.mkdir_p(dir)
-    digests = JSON.parse(capture(@env, 'gh', 'release', 'view', tag, '--repo', @repository, '--json', 'assets'))
+    digests = JSON.parse(capture(@env, 'gh', 'release', 'view', tag, '--repo', repository, '--json', 'assets'))
       .fetch('assets').to_h { [it.fetch('name'), it.fetch('digest')] }
     # A rebuilt draft keeps the asset names, so a file is reused only if it matches the asset's digest.
     Dir.children(dir).each do |name|
@@ -249,7 +259,7 @@ class Publisher
         FileUtils.rm_rf(path)
       end
     end
-    run(@env, 'gh', 'release', 'download', tag, '--repo', @repository, '--dir', dir, '--skip-existing')
+    run(@env, 'gh', 'release', 'download', tag, '--repo', repository, '--dir', dir, '--skip-existing')
     restore_asset_names(dir)
 
     files = Dir[File.join(dir, '*')].sort
@@ -259,7 +269,7 @@ class Publisher
 
     fields = parse_debian_metafile(File.read(changes_paths.first))
     Release.new(
-      repository: @repository, prefix: tag[%r{\A(.*?)debian/}, 1], tag:, dir:, git_dir: @git_dir, changes_paths:, dsc_path: dsc_paths.first, files:,
+      repository:, prefix: tag[%r{\A(.*?)debian/}, 1], tag:, dir:, git_dir: File.join(work_dir, '.git'), changes_paths:, dsc_path: dsc_paths.first, files:,
       source: fields.fetch('Source').first, version: fields.fetch('Version').first, distro: fields.fetch('Distribution').first,
     )
   end
@@ -267,13 +277,18 @@ class Publisher
   def verify(release)
     puts ' * verifying what CI produced'
     git = ['git', '--git-dir', release.git_dir]
-    run(*git, 'fetch', '-q', '--filter=blob:none', '--no-tags', '--force', @url,
-      "refs/tags/#{release.tag}:refs/tags/#{release.tag}",
-      "refs/heads/#{release.dist_branch}:refs/remotes/origin/#{release.dist_branch}")
+    dists = capture('git', 'ls-remote', '--heads', release.url, *release.dist_branches.map { "refs/heads/#{it}" })
+      .lines(chomp: true).map { it.split("\t", 2).fetch(1).delete_prefix('refs/heads/') }
+    raise "#{release.tag}: none of #{release.dist_branches.join(', ')} exists on #{release.repository}" if dists.empty?
+    run(*git, 'fetch', '-q', '--filter=blob:none', '--no-tags', '--force', release.url,
+      "refs/tags/#{release.tag}:refs/tags/#{release.tag}", *dists.map { "refs/heads/#{it}:refs/remotes/origin/#{it}" })
     run('gitsign', 'verify-tag',
       "--certificate-identity=https://github.com/#{signer_workflow('_distro.yml')}@refs/heads/main",
       "--certificate-oidc-issuer=#{OIDC_ISSUER}", release.tag, chdir: File.dirname(release.git_dir))
-    run(*git, 'merge-base', '--is-ancestor', "#{release.tag}^{commit}", "refs/remotes/origin/#{release.dist_branch}")
+    on_dist = dists.any? do |dist|
+      system(*git, 'merge-base', '--is-ancestor', "#{release.tag}^{commit}", "refs/remotes/origin/#{dist}")
+    end
+    raise "#{release.tag} is on none of #{dists.join(', ')}" unless on_dist
 
     each_parallel(release.files, ATTESTATION_JOBS) do |file|
       workflow = file.end_with?('.orig.tar.gz') ? 'build.yml' : '_distro.yml'
@@ -315,20 +330,20 @@ class Publisher
     attestations = attestation_section(draft.fetch('body'))
 
     git = ['git', '--git-dir', release.git_dir]
-    puts "  $ git push --force #{@url} refs/tags/#{release.tag}"
+    puts "  $ git push --force #{release.url} refs/tags/#{release.tag}"
     auth = "http.https://github.com/.extraheader=AUTHORIZATION: basic #{["x-access-token:#{@token}"].pack('m0')}"
-    system(*git, '-c', auth, 'push', '--force', @url, "refs/tags/#{release.tag}", exception: true)
+    system(*git, '-c', auth, 'push', '--force', release.url, "refs/tags/#{release.tag}", exception: true)
     # Uploaded under the names GitHub gave them, so --clobber finds the assets to replace.
     upload_dir = File.join(release.dir, '.upload')
     FileUtils.mkdir_p(upload_dir)
     uploads = release.signed_files.map do |file|
       File.join(upload_dir, asset_name(file)).tap { FileUtils.cp(file, it) }
     end
-    run(@env, 'gh', 'release', 'upload', release.tag, '--repo', @repository, '--clobber', *uploads)
+    run(@env, 'gh', 'release', 'upload', release.tag, '--repo', release.repository, '--clobber', *uploads)
 
     notes = File.join(release.dir, '.notes')
     File.write(notes, release_body(changes_by_arch: release.changes_by_arch, dsc: release.dsc, attestations:, resigned_by: @fingerprint))
-    run(@env, 'gh', 'release', 'edit', release.tag, '--repo', @repository, '--notes-file', notes)
+    run(@env, 'gh', 'release', 'edit', release.tag, '--repo', release.repository, '--notes-file', notes)
   end
 
   # Releases leave draft only after every distro is published, as that makes them immutable.
@@ -352,7 +367,7 @@ class Publisher
     end
     purge(distros.flat_map { index_urls(it) })
     releases.each do |release|
-      run(@env, 'gh', 'release', 'edit', release.tag, '--repo', @repository, '--draft=false')
+      run(@env, 'gh', 'release', 'edit', release.tag, '--repo', release.repository, '--draft=false')
     end
   end
 
@@ -367,7 +382,7 @@ class Publisher
   end
 
   def check_signed(release)
-    run('git', '--git-dir', release.git_dir, 'fetch', '-q', '--filter=blob:none', '--no-tags', '--force', @url,
+    run('git', '--git-dir', release.git_dir, 'fetch', '-q', '--filter=blob:none', '--no-tags', '--force', release.url,
       "refs/tags/#{release.tag}:refs/tags/#{release.tag}")
     _, status_output, _ = Open3.capture3('git', '--git-dir', release.git_dir, 'verify-tag', '--raw', release.tag)
     raise "#{release.tag} is not signed by #{@fingerprint}" unless valid_signers(status_output).include?(@fingerprint)
@@ -382,10 +397,11 @@ end
 # Pins the newest released version of each series and distro in versions.json of sorah-rbpkg/dockerfiles.
 class DockerfilesRelay
   BRANCH = 'master'
+  # The images install rubyN.M packages, which come from here.
+  REPOSITORY = 'sorah-rbpkg/ruby'
 
-  def initialize(dir:, repository:, token:, dry_run:)
+  def initialize(dir:, token:, dry_run:)
     @dir = dir
-    @repository = repository
     @dry_run = dry_run
     @env = {'GH_TOKEN' => token}
     @path = File.join(dir, 'versions.json')
@@ -435,15 +451,14 @@ class DockerfilesRelay
   def git(*args) = capture('git', *args, chdir: @dir)
 
   def built_pairs
-    Dir[File.join(ROOT, 'gen', 'builds', '*.json')].flat_map do |file|
-      build = JSON.parse(File.read(file))
-      build.fetch('distros').map { [build.fetch('source').delete_prefix('ruby'), it] }
+    SERIES.select { it.fetch('repository') == REPOSITORY }.flat_map do |series|
+      series.fetch('distros').map { [series.fetch('source').delete_prefix('ruby'), it] }
     end
   end
 
   # Keyed by [series, distro], from the debian/<version>_<distro> tags of published releases.
   def released_versions
-    tags = JSON.parse(capture(@env, 'gh', 'release', 'list', '--repo', @repository, '--limit', '1000', '--json', 'tagName,isDraft'))
+    tags = JSON.parse(capture(@env, 'gh', 'release', 'list', '--repo', REPOSITORY, '--limit', '1000', '--json', 'tagName,isDraft'))
       .reject { it.fetch('isDraft') }.map { it.fetch('tagName') }.grep(%r{\Adebian/})
     versions = tags.map { it.delete_prefix('debian/').gsub('.#', '.').tr('_%', '~:') }
     pairs = versions.filter_map do |version|
@@ -461,13 +476,13 @@ publish = true
 dry_run = false
 relay_only = false
 dockerfiles_dir = File.expand_path('../dockerfiles', ROOT)
-repository = 'sorah-rbpkg/ruby'
+repository = nil
 prefix = ''
 test = false
 OptionParser.new do |o|
   o.on('-n', '--dry-run', 'Only verify, without signing, pushing or publishing') { dry_run = true }
   o.on('--no-publish', 'Stop after re-signing') { publish = false }
-  o.on('--repository OWNER/REPO') { repository = it }
+  o.on('--repository OWNER/REPO', 'Only this source repository, rather than every one under builds/') { repository = it }
   o.on('--dockerfiles-dir DIR', 'Local checkout of sorah-rbpkg/dockerfiles') { dockerfiles_dir = File.expand_path(it) }
   o.on('--relay-only', 'Only relay released versions to sorah-rbpkg/dockerfiles') { relay_only = true }
   o.on('--test', 'Work on the test/ releases of a test run, and never publish') do
@@ -486,11 +501,12 @@ abort 'another bin/publish is running' unless lock.flock(File::LOCK_EX | File::L
 
 # The DebReleaser token cannot see this repository's drafts, so a test uses your own gh login.
 token = test ? ENV['GH_TOKEN'] || capture('gh', 'auth', 'token').strip : github_token
-relay = DockerfilesRelay.new(dir: dockerfiles_dir, repository:, token:, dry_run:) if publish
+relay = DockerfilesRelay.new(dir: dockerfiles_dir, token:, dry_run:) if publish
 if relay_only
   abort '--relay-only cannot be combined with --test or --no-publish' unless relay
   relay.check
   relay.sync
 else
-  Publisher.new(repository:, prefix:, tags: ARGV, publish:, dry_run:, token:, relay:).run_all
+  repositories = repository ? [repository] : SERIES.map { it.fetch('repository') }.uniq.sort
+  Publisher.new(repositories:, prefix:, tags: ARGV, publish:, dry_run:, token:, relay:).run_all
 end
