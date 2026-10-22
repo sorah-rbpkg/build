@@ -107,7 +107,8 @@ end
 
 def gpg_fingerprint
   out = capture('gpg', '--with-colons', '--list-secret-keys', *ENV['GPGUSER'])
-  out[/^fpr:+(\h{40}):/, 1] or raise 'no GPG secret key found'
+  # A capital S marks a key that can still sign, which leaves out revoked and expired ones.
+  out[/^sec:(?:[^:]*:){10}[^:]*S[^:]*:.*\n(?:(?!sec:).*\n)*?fpr:+(\h{40}):/, 1] or raise 'no usable GPG signing key found'
 end
 
 # Primary key fingerprints that made a good signature, from gpg's VALIDSIG status lines.
