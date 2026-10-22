@@ -10,6 +10,8 @@
     archs: ['amd64', 'arm64'],
     // .github/scripts/smoke/<smoke>.sh
     smoke: 'ruby',
+    // Ruby's test suite needs the org's large runners; other packages build on standard ones.
+    large_runner: true,
     // Every run of a test series releases into test/ of this repository, never the source repository.
     test: test,
   } + (

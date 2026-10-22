@@ -12,6 +12,7 @@
       "bookworm",
       "trixie"
    ],
+   "large_runner": true,
    "master": "master-3.4",
    "repository": "sorah-rbpkg/ruby",
    "smoke": "ruby",

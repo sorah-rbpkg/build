@@ -8,6 +8,7 @@
    "distros": [
       "bullseye"
    ],
+   "large_runner": true,
    "master": "master-3.3",
    "repository": "sorah-rbpkg/ruby",
    "smoke": "ruby",

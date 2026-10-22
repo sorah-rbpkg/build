@@ -15,7 +15,7 @@ COMMITTERS_KEYRING = File.join(ROOT, 'keys', 'committers.asc')
 # Any other distro is taken to be an Ubuntu release.
 DEBIAN_CODENAMES = %w[stretch buster bullseye bookworm trixie forky duke]
 
-Series = Data.define(:file, :source, :repository, :master, :commit, :dist, :distros, :archs, :smoke, :test) do
+Series = Data.define(:file, :source, :repository, :master, :commit, :dist, :distros, :archs, :smoke, :large_runner, :test) do
   def self.load(path)
     config = JSON.parse(File.read(path))
     new(
@@ -28,6 +28,7 @@ Series = Data.define(:file, :source, :repository, :master, :commit, :dist, :dist
       distros: config.fetch('distros'),
       archs: config.fetch('archs'),
       smoke: config.fetch('smoke'),
+      large_runner: config.fetch('large_runner'),
       test: config.fetch('test'),
     )
   end
@@ -68,6 +69,15 @@ def verify_signature(kind, ref, dir:)
     _, raw, _ = Open3.capture3(env, 'git', '-C', dir, "verify-#{kind}", '--raw', ref)
     signer = raw[/^\[GNUPG:\] VALIDSIG .*?(\h{40})\s*$/, 1]
     raise "#{ref} is not signed by a key in #{File.basename(COMMITTERS_KEYRING)}" unless signer && trusted.include?(signer)
+  end
+end
+
+# The build job's runs-on. The large ones are org-paid, 64 cores each, in the runner group that admits public repositories.
+def runner_for(arch, large:)
+  if large
+    {group: 'build', labels: arch == 'arm64' ? 'ubuntu-24.04-arm64-large' : 'ubuntu-24.04-large'}
+  else
+    arch == 'arm64' ? 'ubuntu-24.04-arm' : 'ubuntu-24.04'
   end
 end
 
@@ -142,6 +152,7 @@ def plan_series(series, distro_filter:, test:)
       upstream_version:,
       tag:,
       archs: series.archs,
+      runners: series.archs.to_h { [it, runner_for(it, large: series.large_runner)] },
       orig_name:,
       upstream_tag:,
       upstream_commit:,

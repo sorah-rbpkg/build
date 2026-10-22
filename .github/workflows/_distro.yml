@@ -44,10 +44,8 @@ jobs:
   build:
     name: build (${{ matrix.arch }})
     needs: [merge]
-    # Org-paid larger runners, 64 cores each, in the runner group that admits public repositories.
-    runs-on:
-      group: build
-      labels: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm64-large' || 'ubuntu-24.04-large' }}
+    # bin/plan picks the runner per series.
+    runs-on: ${{ fromJSON(inputs.target).runners[matrix.arch] }}
     # Ruby's whole test suite took up to 16 minutes on 4-core runners, and a hung test bills by the minute here.
     timeout-minutes: 45
     permissions:
