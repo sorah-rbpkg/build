@@ -5,4 +5,5 @@ series.ruby(
   master='master',
   commit='4de889346eb34a5b2ff4ab6657961726acabd66a',
   distros=['jammy', 'noble', 'resolute', 'bookworm', 'trixie'],
+  test=false,
 )

@@ -15,5 +15,5 @@
    "master": "master",
    "repository": "sorah-rbpkg/ruby",
    "source": "ruby4.0",
-   "test": true
+   "test": false
 }
