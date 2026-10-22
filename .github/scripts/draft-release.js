@@ -23,12 +23,12 @@ function releaseBody(files, attestations) {
   const dscs = files.filter((f) => f.endsWith('.dsc'));
   if (dscs.length !== 1) throw new Error(`expected one .dsc, got ${dscs.join(', ')}`);
 
-  const body = ['### Changes', ''];
+  const body = [attestations, '', '### Changes', ''];
   for (const changes of files.filter((f) => f.endsWith('.changes')).sort()) {
     const arch = changes.match(/_([a-z0-9]+)\.changes$/)[1];
     body.push(`#### ${arch}`, '', '```', fs.readFileSync(changes, 'utf8').trimEnd(), '```', '');
   }
-  body.push('### dsc', '', '```', fs.readFileSync(dscs[0], 'utf8').trimEnd(), '```', '', attestations);
+  body.push('### dsc', '', '```', fs.readFileSync(dscs[0], 'utf8').trimEnd(), '```');
   return body.join('\n');
 }
 

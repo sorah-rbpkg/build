@@ -86,18 +86,20 @@ def parse_debian_metafile(str)
 end
 
 def release_body(changes_by_arch:, dsc:, attestations: nil, resigned_by: nil)
-  body = ['### Changes', '']
+  body = []
+  body.push(attestations, '') if attestations
+  body.push('### Changes', '')
   changes_by_arch.sort.each do |arch, content|
     body.push("#### #{arch}", '', '```', content.chomp, '```', '')
   end
   body.push('### dsc', '', '```', dsc.chomp, '```')
-  body.push('', attestations) if attestations
   body.push('', "#{RESIGNED_MARKER} #{resigned_by} -->") if resigned_by
   body.join("\n")
 end
 
-# The section draft-release.js appends, carried over when the body is rewritten.
-def attestation_section(body) = body[/^### Attestations\n.*?(?=\n\n<!--|\z)/m]&.rstrip
+# The section draft-release.js writes, carried over when the body is rewritten.
+# Older drafts carry it at the end rather than the top.
+def attestation_section(body) = body[/^### Attestations\n.*?(?=\n\n###|\n\n<!--|\z)/m]&.rstrip
 
 def github_token
   return ENV['GH_TOKEN'] if ENV['GH_TOKEN']
