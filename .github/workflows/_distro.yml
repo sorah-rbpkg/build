@@ -44,9 +44,12 @@ jobs:
   build:
     name: build (${{ matrix.arch }})
     needs: [merge]
-    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    # The package runs Ruby's whole test suite.
-    timeout-minutes: 150
+    # Org-paid larger runners, 64 cores each, in the runner group that admits public repositories.
+    runs-on:
+      group: build
+      labels: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm64-large' || 'ubuntu-24.04-large' }}
+    # Ruby's whole test suite took up to 16 minutes on 4-core runners, and a hung test bills by the minute here.
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
