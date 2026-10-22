@@ -30,6 +30,8 @@ STSCAT_CONFIG = File.expand_path('~/.nkmi-deb-release.json')
 RESIGNED_MARKER = '<!-- resigned-by:'
 # gh attestation verify takes a few seconds per file, mostly waiting on the network.
 ATTESTATION_JOBS = 8
+# gh release download already fetches the assets of one release in parallel.
+DOWNLOAD_JOBS = 4
 
 def signer_workflow(name) = "#{BUILD_REPOSITORY}/.github/workflows/#{name}"
 
@@ -45,6 +47,22 @@ def capture(*cmd, **opts)
   out, status = Open3.capture2(*cmd, **opts)
   raise "#{display_cmd(cmd)} failed" unless status.success?
   out
+end
+
+# Runs the block for each item on that many threads, raising the first error once all have stopped.
+def each_parallel(items, jobs)
+  queue = Queue.new
+  items.each { queue << it }
+  queue.close
+  workers = Array.new(jobs) do
+    Thread.new do
+      Thread.current.report_on_exception = false
+      while (item = queue.pop)
+        yield item
+      end
+    end
+  end
+  workers.each(&:join)
 end
 
 def parse_debian_metafile(str)
@@ -139,13 +157,22 @@ class Publisher
       .map { it.fetch('tagName') }
     drafts &= @tags unless @tags.empty?
     abort 'No draft releases to publish' if drafts.empty?
+    drafts.sort!
+    puts 'Drafts:', *drafts.map { "  #{it}" }
 
-    drafts.sort.each { process(it) }
+    # gitsign cannot resolve tags in a bare repository.
+    work_dir = File.join(ROOT, 'tmp', 'publish', @repository.tr('/', '_'))
+    run('git', 'init', '-q', work_dir) unless File.directory?(work_dir)
+    @git_dir = File.join(work_dir, '.git')
+
+    releases = {}
+    each_parallel(drafts, DOWNLOAD_JOBS) { releases[it] = download(it) }
+    drafts.each { process(releases.fetch(it)) }
   end
 
-  def process(tag)
+  def process(release)
+    tag = release.tag
     puts "=> #{tag}"
-    release = download(tag)
     draft = view(tag)
 
     if draft.fetch('body').include?("#{RESIGNED_MARKER} #{@fingerprint}")
@@ -198,11 +225,6 @@ class Publisher
     run(@env, 'gh', 'release', 'download', tag, '--repo', @repository, '--dir', dir)
     restore_asset_names(dir)
 
-    # gitsign cannot resolve tags in a bare repository.
-    work_dir = File.join(ROOT, 'tmp', 'publish', @repository.tr('/', '_'))
-    run('git', 'init', '-q', work_dir) unless File.directory?(work_dir)
-    git_dir = File.join(work_dir, '.git')
-
     files = Dir[File.join(dir, '*')].sort
     changes_paths = files.grep(/\.changes\z/)
     dsc_paths = files.grep(/\.dsc\z/)
@@ -210,7 +232,7 @@ class Publisher
 
     fields = parse_debian_metafile(File.read(changes_paths.first))
     Release.new(
-      repository: @repository, prefix: @prefix, tag:, dir:, git_dir:, changes_paths:, dsc_path: dsc_paths.first, files:,
+      repository: @repository, prefix: @prefix, tag:, dir:, git_dir: @git_dir, changes_paths:, dsc_path: dsc_paths.first, files:,
       source: fields.fetch('Source').first, version: fields.fetch('Version').first, distro: fields.fetch('Distribution').first,
     )
   end
@@ -226,22 +248,13 @@ class Publisher
       "--certificate-oidc-issuer=#{OIDC_ISSUER}", release.tag, chdir: File.dirname(release.git_dir))
     run(*git, 'merge-base', '--is-ancestor', "#{release.tag}^{commit}", "refs/remotes/origin/#{release.dist_branch}")
 
-    queue = Queue.new
-    release.files.each { queue << it }
-    queue.close
-    workers = Array.new(ATTESTATION_JOBS) do
-      Thread.new do
-        Thread.current.report_on_exception = false
-        while (file = queue.pop)
-          workflow = file.end_with?('.orig.tar.gz') ? 'build.yml' : '_distro.yml'
-          ok = system(@env, 'gh', 'attestation', 'verify', file, '--repo', BUILD_REPOSITORY,
-            '--signer-workflow', signer_workflow(workflow), '--source-ref', 'refs/heads/main', out: File::NULL)
-          raise "#{File.basename(file)}: attestation verification failed" unless ok
-          puts "  attested: #{File.basename(file)}"
-        end
-      end
+    each_parallel(release.files, ATTESTATION_JOBS) do |file|
+      workflow = file.end_with?('.orig.tar.gz') ? 'build.yml' : '_distro.yml'
+      ok = system(@env, 'gh', 'attestation', 'verify', file, '--repo', BUILD_REPOSITORY,
+        '--signer-workflow', signer_workflow(workflow), '--source-ref', 'refs/heads/main', out: File::NULL)
+      raise "#{File.basename(file)}: attestation verification failed" unless ok
+      puts "  attested: #{File.basename(file)}"
     end
-    workers.each(&:join)
 
     [*release.changes_paths, release.dsc_path].each do |meta|
       parse_debian_metafile(File.read(meta)).fetch('Checksums-Sha256').each do |line|
