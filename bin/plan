@@ -53,19 +53,18 @@ def changed_series(since)
     .lines(chomp: true).map { File.join(ROOT, it) }
 end
 
-# Only a commit signed by a key in keys/committers.asc may be built.
-def verify_commit_signature(series, dir:)
+# Only commits and upstream tags signed by a key in keys/committers.asc may be built.
+# kind is "commit" or "tag", for git verify-commit or verify-tag.
+def verify_signature(kind, ref, dir:)
   Dir.mktmpdir('plan-gnupg') do |gnupghome|
     env = {'GNUPGHOME' => gnupghome}
     _, status = Open3.capture2e(env, 'gpg', '--batch', '--import', COMMITTERS_KEYRING)
     raise "cannot import #{COMMITTERS_KEYRING}" unless status.success?
     trusted = Open3.capture2(env, 'gpg', '--batch', '--with-colons', '--list-keys').first.scan(/^fpr:+(\h{40}):/).flatten
 
-    _, raw, _ = Open3.capture3(env, 'git', '-C', dir, 'verify-commit', '--raw', series.commit)
+    _, raw, _ = Open3.capture3(env, 'git', '-C', dir, "verify-#{kind}", '--raw', ref)
     signer = raw[/^\[GNUPG:\] VALIDSIG .*?(\h{40})\s*$/, 1]
-    unless signer && trusted.include?(signer)
-      raise "#{series.file}: #{series.commit} is not signed by a key in #{File.basename(COMMITTERS_KEYRING)}"
-    end
+    raise "#{ref} is not signed by a key in #{File.basename(COMMITTERS_KEYRING)}" unless signer && trusted.include?(signer)
   end
 end
 
@@ -84,7 +83,7 @@ def plan_series(series, distro_filter:, test:)
   unless git?('merge-base', '--is-ancestor', series.commit, "refs/remotes/origin/#{series.master}", dir:)
     raise "#{series.file}: #{series.commit} is not on #{series.repository} #{series.master}"
   end
-  verify_commit_signature(series, dir:)
+  verify_signature('commit', series.commit, dir:)
 
   head = git('cat-file', 'blob', "#{series.commit}:debian/changelog", dir:).lines.first
   m = head.match(/\A(?<source>\S+) \((?<version>[^)]+)\)/) or raise "#{series.file}: cannot parse changelog: #{head}"
@@ -92,6 +91,11 @@ def plan_series(series, distro_filter:, test:)
   raise "#{series.file}: changelog version #{m[:version]} has no ~dist" unless m[:version].include?('~dist')
 
   upstream_version = m[:version].sub(/\A\d+:/, '').sub(/-[^-]+\z/, '')
+  upstream_tag = "upstream/#{upstream_version.tr('~:', '_%')}"
+  git('fetch', '-q', '--filter=blob:none', '--no-tags', '--force', series.url, "+refs/tags/#{upstream_tag}:refs/tags/#{upstream_tag}", dir:)
+  verify_signature('tag', upstream_tag, dir:)
+  # The orig is archived from this commit rather than the tag, which could be moved after planning.
+  upstream_commit = git('rev-parse', "refs/tags/#{upstream_tag}^{commit}", dir:).strip
   existing_tags = git('ls-remote', '--tags', '--refs', series.url, 'refs/tags/debian/*')
     .lines(chomp: true).map { it.split("\t", 2).fetch(1).delete_prefix('refs/tags/') }
 
@@ -123,7 +127,8 @@ def plan_series(series, distro_filter:, test:)
       archs: series.archs,
       orig_name: "#{series.source}_#{upstream_version}.orig.tar.gz",
       orig_release: "#{prefix}orig/#{series.source}/#{upstream_version.tr('~:', '_%')}",
-      upstream_tag: "upstream/#{upstream_version.tr('~:', '_%')}",
+      upstream_tag:,
+      upstream_commit:,
       image: "#{DEBIAN_CODENAMES.include?(distro) ? 'debian' : 'ubuntu'}:#{distro}",
       test:,
       release_repository: test ? BUILD_REPOSITORY : series.repository,
@@ -147,6 +152,6 @@ targets = files.sort.flat_map do |file|
   series = Series.load(file)
   plan_series(series, distro_filter:, test: test || series.test)
 end
-origs = targets.map { it.slice(:repository, :source, :upstream_version, :upstream_tag, :orig_name, :orig_release) }.uniq
+origs = targets.map { it.slice(:repository, :source, :upstream_version, :upstream_tag, :upstream_commit, :orig_name, :orig_release) }.uniq
 
 puts JSON.generate({targets:, origs:})

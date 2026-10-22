@@ -7,7 +7,7 @@ This repository builds the Debian packages of [sorah-rbpkg/ruby](https://github.
 1. A release is prepared on `master` (or `master-N.M`) of sorah-rbpkg/ruby with `gbp import-orig` and pushed.
 2. `commit` in [`builds/<series>.json`](./builds) is pointed at that commit and pushed to `main` here.
 3. [`build.yml`](./.github/workflows/build.yml) runs [`bin/plan`](./bin/plan), which checks that the commit is signed by a key in [`keys/committers.asc`](./keys/committers.asc) and lists the distros whose `debian/<version>_<distro>` tag does not exist yet.
-4. The orig tarball is generated once per upstream version and kept as the release `orig/<source>/<version>` of this repository, so every distro and every later build use the same bytes.
+4. The orig tarball is generated once per upstream version from the commit of the signed `upstream/<version>` tag, and kept as the release `orig/<source>/<version>` of this repository, so every distro and every later build use the same bytes.
 5. [`_distro.yml`](./.github/workflows/_distro.yml) runs once per distro:
    - merge: merges the commit into `dist/N.M/<distro>` and stages the result here as `dist-stage/N.M/<distro>`
    - build: runs `debuild` in the package's `debian/Dockerfile.<distro>` on native amd64 and arm64 runners, and attests every output
@@ -118,7 +118,7 @@ A test run goes through every job, approval included, without writing to sorah-r
 
 ## Security model
 
-- Only a `commit` signed by a key in `keys/committers.asc` is built, test runs included. Adding a signer means committing their public key there.
+- Only a `commit` signed by a key in `keys/committers.asc` is built, test runs included. The `upstream/<version>` tag the orig tarball comes from must be signed by such a key as well. Adding a signer means committing their public key there.
 - Only the `release` job of `_distro.yml` on `main`, after approval, can obtain a token for sorah-rbpkg/ruby. Build and smoke jobs have read access only.
 - The release job pushes without force, so `dist/N.M/<distro>` only ever fast-forwards, and it refuses a tag that already points elsewhere.
 - Tags pushed by CI are signed keylessly by gitsign with the workflow's identity. GitHub shows them as unverified, because the Sigstore CA is not in its trust store.
