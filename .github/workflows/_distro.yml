@@ -69,12 +69,14 @@ jobs:
           ref: ${{ needs.merge.outputs.sha }}
           path: src
 
-      - name: download orig
-        run: gh release download "$ORIG_RELEASE" --repo "$GITHUB_REPOSITORY" --pattern "$ORIG_NAME" --dir orig
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ORIG_RELEASE: ${{ fromJSON(inputs.target).orig_release }}
-          ORIG_NAME: ${{ fromJSON(inputs.target).orig_name }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: orig-${{ fromJSON(inputs.target).orig_name }}
+          path: orig
+
+      # Printed after every transfer, so the logs show each job handled the same bytes.
+      - name: checksums
+        run: sha256sum orig/*
 
       - name: debuild
         run: .github/scripts/debuild.sh
@@ -89,6 +91,9 @@ jobs:
         id: attest
         with:
           subject-path: out/*
+
+      - name: checksums
+        run: sha256sum out/*
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -134,6 +139,9 @@ jobs:
           merge-multiple: true
           path: out
 
+      - name: checksums
+        run: sha256sum out/*
+
       - name: smoke
         run: .github/scripts/smoke.sh
         env:
@@ -177,12 +185,19 @@ jobs:
           merge-multiple: true
           path: attestation
 
-      - name: download orig
-        run: gh release download "$ORIG_RELEASE" --repo "$GITHUB_REPOSITORY" --pattern "$ORIG_NAME" --dir out
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ORIG_RELEASE: ${{ fromJSON(inputs.target).orig_release }}
-          ORIG_NAME: ${{ fromJSON(inputs.target).orig_name }}
+      # Attached to every distro's release.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: orig-${{ fromJSON(inputs.target).orig_name }}
+          path: out
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: attestation-${{ fromJSON(inputs.target).orig_name }}
+          path: attestation
+
+      - name: checksums
+        run: sha256sum out/*
 
       # A test run never obtains a token for the source repository, so it cannot write there.
       - uses: sorah/sts-cat/.github/actions/exchange-token@19e1177084d0f2dedb575ab1b78bd2a1a100f6e9 # main

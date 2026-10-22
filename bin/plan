@@ -126,7 +126,6 @@ def plan_series(series, distro_filter:, test:)
       tag:,
       archs: series.archs,
       orig_name: "#{series.source}_#{upstream_version}.orig.tar.gz",
-      orig_release: "#{prefix}orig/#{series.source}/#{upstream_version.tr('~:', '_%')}",
       upstream_tag:,
       upstream_commit:,
       image: "#{DEBIAN_CODENAMES.include?(distro) ? 'debian' : 'ubuntu'}:#{distro}",
@@ -152,6 +151,6 @@ targets = files.sort.flat_map do |file|
   series = Series.load(file)
   plan_series(series, distro_filter:, test: test || series.test)
 end
-origs = targets.map { it.slice(:repository, :source, :upstream_version, :upstream_tag, :upstream_commit, :orig_name, :orig_release) }.uniq
+origs = targets.map { it.slice(:repository, :source, :upstream_version, :upstream_tag, :upstream_commit, :orig_name) }.uniq
 
 puts JSON.generate({targets:, origs:})
