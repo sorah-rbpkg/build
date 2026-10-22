@@ -70,12 +70,14 @@ jobs:
           path: src
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: fromJSON(inputs.target).orig_name
         with:
           name: orig-${{ fromJSON(inputs.target).orig_name }}
           path: orig
 
       # Printed after every transfer, so the logs show each job handled the same bytes.
       - name: checksums
+        if: fromJSON(inputs.target).orig_name
         run: sha256sum orig/*
 
       - name: debuild
@@ -147,6 +149,7 @@ jobs:
         run: .github/scripts/smoke.sh
         env:
           IMAGE: ${{ fromJSON(inputs.target).image }}
+          SMOKE: ${{ fromJSON(inputs.target).smoke }}
           SOURCE: ${{ fromJSON(inputs.target).source }}
           DISTRO: ${{ fromJSON(inputs.target).distro }}
           ARCH: ${{ matrix.arch }}
@@ -202,11 +205,13 @@ jobs:
 
       # Attached to every distro's release.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: fromJSON(inputs.target).orig_name
         with:
           name: orig-${{ fromJSON(inputs.target).orig_name }}
           path: out
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: fromJSON(inputs.target).orig_name
         with:
           name: attestation-${{ fromJSON(inputs.target).orig_name }}
           path: attestation

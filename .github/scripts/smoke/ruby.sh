@@ -1,34 +1,12 @@
 #!/bin/bash
-# Runs inside a stock distro image; the checks follow sorah-rbpkg/test.sh.
+# Installs a rubyN.M build; the checks follow sorah-rbpkg/test.sh.
 # rubygems-integration and ruby-defaults come from the published apt repository.
 set -euxo pipefail
-: "${DISTRO:?}" "${ARCH:?}" "${RUBY_VERSION:?}"
-export DEBIAN_FRONTEND=noninteractive
-v="$RUBY_VERSION"
-
-# Same as dockerfiles/Dockerfile.bullseye: deb.debian.org's bullseye-security pool misses files its index lists.
-if [[ "$DISTRO" = bullseye ]]; then
-  printf '%s\n' \
-    'deb http://archive.debian.org/debian bullseye main' \
-    'deb http://archive.debian.org/debian bullseye-updates main' \
-    'deb http://archive.debian.org/debian-security bullseye-security main' \
-    > /etc/apt/sources.list
-  echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive
-fi
-
-apt-get update
-apt-get install -y --no-install-recommends ca-certificates
-install -D -m0644 /keys/sorah-ruby.gpg /usr/local/share/keyrings/sorah-ruby.gpg
-echo "deb [signed-by=/usr/local/share/keyrings/sorah-ruby.gpg] https://cache.ruby-lang.org/lab/sorah/deb/ ${DISTRO} main" \
-  > /etc/apt/sources.list.d/sorah-ruby.list
-apt-get update
-
-debs=()
-for deb in /debs/*_"${ARCH}".deb /debs/*_all.deb; do
-  if [[ -e "$deb" && "$deb" != *-dbgsym_* ]]; then
-    debs+=("$deb")
-  fi
-done
+: "${SOURCE:?}"
+# shellcheck disable=SC1091
+. /smoke/lib.sh
+mapfile -t debs < <(built_debs)
+v="${SOURCE#ruby}"
 
 # ruby-defaults provides the unsuffixed commands, but only exists for the series it currently points at.
 defaults_version="$(apt-cache madison ruby | awk -v prefix="1:${v}+" 'index($3, prefix) == 1 { print $3; exit }')"

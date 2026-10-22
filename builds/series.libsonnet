@@ -8,6 +8,8 @@
     distros: distros,
     // The first arch also builds the source and arch:all packages.
     archs: ['amd64', 'arm64'],
+    // .github/scripts/smoke/<smoke>.sh
+    smoke: 'ruby',
     // Every run of a test series releases into test/ of this repository, never the source repository.
     test: test,
   } + (

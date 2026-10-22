@@ -11,7 +11,7 @@ local linters = new Mapping<String, Step> {
     fix = "bin/generate"
   }
   ["shellcheck"] {
-    glob = List(".github/scripts/*.sh", "bin/generate")
+    glob = List(".github/scripts/**/*.sh", "bin/generate")
     check = "shellcheck {{files}}"
   }
   ["jactionlint"] = Builtins.jactionlint

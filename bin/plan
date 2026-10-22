@@ -15,7 +15,7 @@ COMMITTERS_KEYRING = File.join(ROOT, 'keys', 'committers.asc')
 # Any other distro is taken to be an Ubuntu release.
 DEBIAN_CODENAMES = %w[stretch buster bullseye bookworm trixie forky duke]
 
-Series = Data.define(:file, :source, :repository, :master, :commit, :dist, :distros, :archs, :test) do
+Series = Data.define(:file, :source, :repository, :master, :commit, :dist, :distros, :archs, :smoke, :test) do
   def self.load(path)
     config = JSON.parse(File.read(path))
     new(
@@ -27,6 +27,7 @@ Series = Data.define(:file, :source, :repository, :master, :commit, :dist, :dist
       dist: config.fetch('dist'),
       distros: config.fetch('distros'),
       archs: config.fetch('archs'),
+      smoke: config.fetch('smoke'),
       test: config.fetch('test'),
     )
   end
@@ -76,7 +77,7 @@ def tag_for(version)
 end
 
 def plan_series(series, distro_filter:, test:)
-  raise "#{series.file}: dist must start with dist/" unless series.dist.start_with?('dist/')
+  raise "#{series.file}: dist must be dist or start with dist/" unless series.dist == 'dist' || series.dist.start_with?('dist/')
   raise "#{series.file}: commit must be a full SHA" unless series.commit.match?(/\A\h{40}\z/)
 
   dir = File.join(ROOT, 'tmp', 'plan', series.repository.tr('/', '_'))
@@ -92,12 +93,18 @@ def plan_series(series, distro_filter:, test:)
   raise "#{series.file}: changelog source is #{m[:source]}, not #{series.source}" unless m[:source] == series.source
   raise "#{series.file}: changelog version #{m[:version]} has no ~dist" unless m[:version].include?('~dist')
 
-  upstream_version = m[:version].sub(/\A\d+:/, '').sub(/-[^-]+\z/, '')
-  upstream_tag = "upstream/#{upstream_version.tr('~:', '_%')}"
-  git('fetch', '-q', '--filter=blob:none', '--no-tags', '--force', series.url, "+refs/tags/#{upstream_tag}:refs/tags/#{upstream_tag}", dir:)
-  verify_signature('tag', upstream_tag, dir:)
-  # The orig is archived from this commit rather than the tag, which could be moved after planning.
-  upstream_commit = git('rev-parse', "refs/tags/#{upstream_tag}^{commit}", dir:).strip
+  # A version without a Debian revision is a native package, which has no orig tarball.
+  if m[:version].sub(/\A\d+:/, '').include?('-')
+    upstream_version = m[:version].sub(/\A\d+:/, '').sub(/-[^-]+\z/, '')
+    upstream_tag = "upstream/#{upstream_version.tr('~:', '_%')}"
+    git('fetch', '-q', '--filter=blob:none', '--no-tags', '--force', series.url, "+refs/tags/#{upstream_tag}:refs/tags/#{upstream_tag}", dir:)
+    verify_signature('tag', upstream_tag, dir:)
+    # The orig is archived from this commit rather than the tag, which could be moved after planning.
+    upstream_commit = git('rev-parse', "refs/tags/#{upstream_tag}^{commit}", dir:).strip
+    orig_name = "#{series.source}_#{upstream_version}.orig.tar.gz"
+  else
+    upstream_version = upstream_tag = upstream_commit = orig_name = nil
+  end
   existing_tags = git('ls-remote', '--tags', '--refs', series.url, 'refs/tags/debian/*')
     .lines(chomp: true).map { it.split("\t", 2).fetch(1).delete_prefix('refs/tags/') }
   existing_dists = git('ls-remote', '--heads', series.url, "refs/heads/#{series.dist}/*")
@@ -135,11 +142,12 @@ def plan_series(series, distro_filter:, test:)
       upstream_version:,
       tag:,
       archs: series.archs,
-      orig_name: "#{series.source}_#{upstream_version}.orig.tar.gz",
+      orig_name:,
       upstream_tag:,
       upstream_commit:,
       image: "#{DEBIAN_CODENAMES.include?(distro) ? 'debian' : 'ubuntu'}:#{distro}",
       dockerfile:,
+      smoke: series.smoke,
       test:,
       release_repository: test ? BUILD_REPOSITORY : series.repository,
       release_dist_branch: "#{prefix}#{dist_branch}",
@@ -162,6 +170,6 @@ targets = files.sort.flat_map do |file|
   series = Series.load(file)
   plan_series(series, distro_filter:, test: test || series.test)
 end
-origs = targets.map { it.slice(:repository, :source, :upstream_version, :upstream_tag, :upstream_commit, :orig_name) }.uniq
+origs = targets.select { it[:orig_name] }.map { it.slice(:repository, :source, :upstream_version, :upstream_tag, :upstream_commit, :orig_name) }.uniq
 
 puts JSON.generate({targets:, origs:})

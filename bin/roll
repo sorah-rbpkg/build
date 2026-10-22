@@ -1,12 +1,13 @@
 #!/usr/bin/env ruby
-# Usage: bin/roll [--repository OWNER/REPO] [--source-dir DIR] REV...
+# Usage: bin/roll [--repository OWNER/REPO] [--source-dir DIR] [--series ID] REV...
 #
 # Points each series at REV of the source repository, a branch name or a full SHA, and commits each one.
-# The series is the source package named by debian/changelog at REV. Every series is checked with bin/plan
+# The series is the one for the source package named by debian/changelog at REV. When several series share
+# that source, as ruby-defaults does, it is the one built from branch REV, or the one given with --series. Every series is checked with bin/plan
 # before anything is committed. Pushing the commits starts the builds.
 #
-# A local checkout of the source repository, ../<repo> by default, must have pushed REV's branch and its
-# upstream tag, as REV is resolved on GitHub.
+# A local checkout of the source repository, ../<repo> by default, must have pushed REV's branch and, unless
+# it is a native package, its upstream tag, as REV is resolved on GitHub.
 require 'fileutils'
 require 'json'
 require 'open3'
@@ -14,9 +15,9 @@ require 'optparse'
 
 ROOT = File.expand_path('..', __dir__)
 
-Roll = Data.define(:rev, :commit, :source, :version, :upstream_tag) do
-  def src = File.join('builds', "#{source}.jsonnet")
-  def json = File.join('gen', 'builds', "#{source}.json")
+Roll = Data.define(:rev, :commit, :source, :version, :upstream_tag, :id) do
+  def src = File.join('builds', "#{id}.jsonnet")
+  def json = File.join('gen', 'builds', "#{id}.json")
 end
 
 def run(*cmd, **opts) = system(*cmd, exception: true, chdir: ROOT, **opts)
@@ -29,11 +30,14 @@ end
 
 repository = 'sorah-rbpkg/ruby'
 source_dir = nil
+series_id = nil
 OptionParser.new do |o|
   o.on('--repository OWNER/REPO') { repository = it }
   o.on('--source-dir DIR', 'Local checkout of the source repository') { source_dir = File.expand_path(it) }
+  o.on('--series ID', 'Series under builds/, when REV alone does not tell') { series_id = it }
 end.parse!(ARGV)
-abort 'Usage: bin/roll [--repository OWNER/REPO] [--source-dir DIR] REV...' if ARGV.empty?
+abort 'Usage: bin/roll [--repository OWNER/REPO] [--source-dir DIR] [--series ID] REV...' if ARGV.empty?
+abort '--series takes a single REV' if series_id && ARGV.size > 1
 source_dir ||= File.expand_path(File.join('..', repository.split('/').last), ROOT)
 abort "#{source_dir} is not a checkout of #{repository}; pass --source-dir" unless File.directory?(File.join(source_dir, '.git'))
 
@@ -45,6 +49,18 @@ url = "https://github.com/#{repository}.git"
 dir = File.join(ROOT, 'tmp', 'plan', repository.tr('/', '_'))
 capture('git', 'init', '-q', '--bare', dir) unless File.directory?(dir)
 
+builds = Dir[File.join(ROOT, 'gen', 'builds', '*.json')].to_h { [File.basename(it, '.json'), JSON.parse(File.read(it))] }
+
+def find_series(builds, repository:, source:, rev:, series_id:)
+  return series_id if series_id
+
+  candidates = builds.select { |_, b| b.fetch('repository') == repository && b.fetch('source') == source }
+  candidates = candidates.select { |_, b| b.fetch('master') == rev } if candidates.size > 1
+  abort "#{rev}: no series under builds/ builds #{source} from #{repository}" if candidates.empty?
+  abort "#{rev}: several series build #{source}; pass --series" if candidates.size > 1
+  candidates.keys.first
+end
+
 rolls = ARGV.map do |rev|
   commit = if rev.match?(/\A\h{40}\z/)
     rev
@@ -54,9 +70,12 @@ rolls = ARGV.map do |rev|
   capture('git', '-C', dir, 'fetch', '-q', '--filter=blob:none', '--no-tags', url, commit)
   head = capture('git', '-C', dir, 'cat-file', 'blob', "#{commit}:debian/changelog").lines.first
   m = head.match(/\A(?<source>\S+) \((?<version>[^)]+)\)/) or abort "#{rev}: cannot parse changelog: #{head}"
-  upstream_version = m[:version].sub(/\A\d+:/, '').sub(/-[^-]+\z/, '')
-  Roll.new(rev:, commit:, source: m[:source], version: m[:version].sub('~dist', ''),
-    upstream_tag: "upstream/#{upstream_version.tr('~:', '_%')}")
+  # A native package, without a Debian revision, has no upstream tag.
+  upstream_tag = if m[:version].sub(/\A\d+:/, '').include?('-')
+    "upstream/#{m[:version].sub(/\A\d+:/, '').sub(/-[^-]+\z/, '').tr('~:', '_%')}"
+  end
+  Roll.new(rev:, commit:, source: m[:source], version: m[:version].sub('~dist', ''), upstream_tag:,
+    id: find_series(builds, repository:, source: m[:source], rev:, series_id:))
 end
 
 def local_rev(dir, ref)
@@ -69,17 +88,19 @@ rolls.each do |roll|
     local = local_rev(source_dir, "refs/heads/#{roll.rev}")
     abort "#{roll.rev} is at #{local} in #{source_dir} but at #{roll.commit} on #{repository}" if local && local != roll.commit
   end
+  next unless roll.upstream_tag
+
   remote = capture('git', 'ls-remote', url, "refs/tags/#{roll.upstream_tag}").split("\t").first
   abort "#{roll.upstream_tag} is not on #{repository}; push it first" unless remote
   local = local_rev(source_dir, "refs/tags/#{roll.upstream_tag}")
   abort "#{roll.upstream_tag} differs between #{source_dir} and #{repository}" if local && local != remote
 end
 
-rolls.group_by(&:source).each do |source, group|
-  abort "#{group.map(&:rev).join(', ')} are all #{source}" if group.size > 1
+rolls.group_by(&:id).each do |id, group|
+  abort "#{group.map(&:rev).join(', ')} are all #{id}" if group.size > 1
 end
 rolls.each do |roll|
-  abort "#{roll.rev} is #{roll.source}, which has no #{roll.src}" unless File.exist?(File.join(ROOT, roll.src))
+  abort "#{roll.rev} is #{roll.id}, which has no #{roll.src}" unless File.exist?(File.join(ROOT, roll.src))
   abort "#{roll.src} or #{roll.json} has uncommitted changes" unless capture('git', 'status', '--porcelain', '--', roll.src, roll.json).empty?
 end
 

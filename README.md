@@ -83,6 +83,7 @@ Each series has its own `builds/<series>.jsonnet`, which `bin/generate` renders 
   "dist": "dist/4.0",                   // branches are dist/4.0/<distro>
   "distros": ["jammy", "noble", "resolute", "bookworm", "trixie"],
   "archs": ["amd64", "arm64"],          // the first one also builds source and arch:all packages
+  "smoke": "ruby",                      // .github/scripts/smoke/<smoke>.sh
   "test": true,                         // every run is a test run; see Test mode
   "try": 2                              // optional; bumping it rebuilds on push to main
 }
@@ -95,11 +96,11 @@ Each series has its own `builds/<series>.jsonnet`, which `bin/generate` renders 
 1. A release is prepared on `master` (or `master-N.M`) of sorah-rbpkg/ruby with `gbp import-orig` and pushed.
 2. `commit` in [`builds/<series>.jsonnet`](./builds) is pointed at that commit and pushed to `main` here.
 3. [`build.yml`](./.github/workflows/build.yml) runs [`bin/plan`](./bin/plan), which checks that the commit is signed by a key in [`keys/committers.asc`](./keys/committers.asc) and lists the distros whose `debian/<version>_<distro>` tag does not exist yet.
-4. The orig tarball is generated once per run from the commit of the signed `upstream/<version>` tag, checked against the ruby-lang.org release by [`bin/verify-orig`](./bin/verify-orig), and compared with any copy already in the apt repository, whose pool rejects a second orig with different bytes. Every distro in the run builds from that one file, and each distro's release carries it.
+4. Unless the package is native, without a Debian revision, the orig tarball is generated once per run from the commit of the signed `upstream/<version>` tag, checked against the ruby-lang.org release by [`bin/verify-orig`](./bin/verify-orig), and compared with any copy already in the apt repository, whose pool rejects a second orig with different bytes. Every distro in the run builds from that one file, and each distro's release carries it.
 5. [`_distro.yml`](./.github/workflows/_distro.yml) runs once per distro:
    - merge: merges the commit into `dist/N.M/<distro>` and stages the result here as `dist-stage/<series>/<distro>`, where `<series>` is the name of its file under `builds/`
    - build: runs `debuild` in the image from [`dockerfiles/Dockerfile.<distro>`](./dockerfiles), or `dockerfiles/<series>/Dockerfile.<distro>` when a series needs its own, with the package's `debian/control` as its build dependencies, on native amd64 and arm64 runners, and attests every output
-   - smoke: installs the packages on a stock image of the distro and runs the interpreter and bundled tools
+   - smoke: installs the packages on a stock image of the distro and runs [`.github/scripts/smoke/<smoke>.sh`](./.github/scripts/smoke)
    - release: waits for approval in the `release` environment, tags `debian/<version>_<distro>` with gitsign, fast-forwards `dist/N.M/<distro>` on sorah-rbpkg/ruby, and uploads everything to a draft release there, with links to the build attestations
 6. [`bin/publish`](./bin/publish), run locally, verifies the draft, re-signs it with your GPG key, adds it to aptly and publishes the release.
 

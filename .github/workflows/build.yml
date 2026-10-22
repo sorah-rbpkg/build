@@ -119,7 +119,8 @@ jobs:
   distro:
     name: ${{ matrix.target.id }} ${{ matrix.target.distro }}${{ matrix.target.test && ' (test)' || '' }}
     needs: [plan, orig]
-    if: needs.plan.outputs.targets != '[]'
+    # orig is skipped when every target is a native package.
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.targets != '[]' && contains(fromJSON('["success","skipped"]'), needs.orig.result) }}
     permissions:
       contents: write
       id-token: write

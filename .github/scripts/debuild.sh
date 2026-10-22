@@ -1,7 +1,9 @@
 #!/bin/bash
 # Builds the staged source tree in the image from DOCKERFILE, which bin/plan picked.
 set -euxo pipefail
-: "${SOURCE:?}" "${DISTRO:?}" "${ORIG_NAME:?}" "${BUILD:?}" "${DOCKERFILE:?}"
+: "${SOURCE:?}" "${DISTRO:?}" "${BUILD:?}" "${DOCKERFILE:?}"
+# ORIG_NAME is empty for a native package.
+ORIG_NAME="${ORIG_NAME:-}"
 
 src="${GITHUB_WORKSPACE}/src"
 out="${GITHUB_WORKSPACE}/out"
@@ -9,7 +11,9 @@ work="${RUNNER_TEMP}/debuild"
 mkdir -p "$out" "$work"
 
 git -C "$src" archive --format=tar --prefix "${SOURCE}/" HEAD > "${work}/source.tar"
-cp "${GITHUB_WORKSPACE}/orig/${ORIG_NAME}" "${work}/"
+if [[ -n "$ORIG_NAME" ]]; then
+  cp "${GITHUB_WORKSPACE}/orig/${ORIG_NAME}" "${work}/"
+fi
 
 docker buildx build -f "${GITHUB_WORKSPACE}/${DOCKERFILE}" -t debuild --load "${src}/debian"
 
