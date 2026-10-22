@@ -233,9 +233,19 @@ class Publisher
 
   def download(tag)
     dir = File.join(ROOT, 'tmp', 'publish', tag.tr('/', '_'))
-    FileUtils.rm_rf(dir)
     FileUtils.mkdir_p(dir)
-    run(@env, 'gh', 'release', 'download', tag, '--repo', @repository, '--dir', dir)
+    digests = JSON.parse(capture(@env, 'gh', 'release', 'view', tag, '--repo', @repository, '--json', 'assets'))
+      .fetch('assets').to_h { [it.fetch('name'), it.fetch('digest')] }
+    # A rebuilt draft keeps the asset names, so a file is reused only if it matches the asset's digest.
+    Dir.children(dir).each do |name|
+      path = File.join(dir, name)
+      if File.file?(path) && digests[asset_name(name)] == "sha256:#{Digest::SHA256.file(path).hexdigest}"
+        File.rename(path, File.join(dir, asset_name(name)))
+      else
+        FileUtils.rm_rf(path)
+      end
+    end
+    run(@env, 'gh', 'release', 'download', tag, '--repo', @repository, '--dir', dir, '--skip-existing')
     restore_asset_names(dir)
 
     files = Dir[File.join(dir, '*')].sort
@@ -464,7 +474,7 @@ OptionParser.new do |o|
   end
 end.parse!(ARGV)
 
-# Runs share tmp/publish, and each clears a draft's directory before downloading into it.
+# Runs share tmp/publish, and each prunes a draft's directory before downloading into it.
 FileUtils.mkdir_p(File.join(ROOT, 'tmp', 'publish'))
 lock = File.open(File.join(ROOT, 'tmp', 'publish', '.lock'), File::RDWR | File::CREAT)
 abort 'another bin/publish is running' unless lock.flock(File::LOCK_EX | File::LOCK_NB)
