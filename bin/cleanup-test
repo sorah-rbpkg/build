@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+# Usage: bin/cleanup-test [--dry-run]
+#
+# Deletes everything test runs leave in this repository: releases, tags and branches under test/.
+require 'json'
+require 'open3'
+require 'optparse'
+
+BUILD_REPOSITORY = 'sorah-rbpkg/build'
+
+def gh_json(*args)
+  out, status = Open3.capture2('gh', *args)
+  raise "gh #{args.join(' ')} failed" unless status.success?
+  JSON.parse(out)
+end
+
+def delete(path, label, dry_run:)
+  puts "delete #{label}"
+  system('gh', 'api', '--method', 'DELETE', path, out: File::NULL, exception: true) unless dry_run
+end
+
+dry_run = false
+OptionParser.new do |o|
+  o.on('-n', '--dry-run') { dry_run = true }
+end.parse!(ARGV)
+
+# A running build may still push or release under test/.
+active = gh_json('run', 'list', '--repo', BUILD_REPOSITORY, '--workflow', 'build.yml', '--limit', '50', '--json', 'databaseId,status')
+  .reject { it.fetch('status') == 'completed' }
+unless active.empty?
+  message = "build runs still active: #{active.map { it.fetch('databaseId') }.join(', ')}"
+  dry_run ? warn(message) : abort(message)
+end
+
+gh_json('api', '--paginate', '--slurp', "repos/#{BUILD_REPOSITORY}/releases?per_page=100").flatten
+  .select { it.fetch('tag_name').start_with?('test/') }
+  .each { delete("repos/#{BUILD_REPOSITORY}/releases/#{it.fetch('id')}", "release #{it.fetch('tag_name')}", dry_run:) }
+
+%w[tags heads].each do |kind|
+  gh_json('api', '--paginate', '--slurp', "repos/#{BUILD_REPOSITORY}/git/matching-refs/#{kind}/test/").flatten
+    .each { delete("repos/#{BUILD_REPOSITORY}/git/#{it.fetch('ref').delete_prefix('refs/')}", it.fetch('ref'), dry_run:) }
+end
