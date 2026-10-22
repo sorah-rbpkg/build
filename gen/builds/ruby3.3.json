@@ -11,5 +11,6 @@
    "master": "master-3.3",
    "repository": "sorah-rbpkg/ruby",
    "source": "ruby3.3",
-   "test": false
+   "test": false,
+   "try": 2
 }

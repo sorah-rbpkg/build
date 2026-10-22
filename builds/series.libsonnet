@@ -1,5 +1,5 @@
 {
-  ruby(version, commit, distros, master=null, test=true):: {
+  ruby(version, commit, distros, master=null, test=true, try=null):: {
     source: 'ruby%s' % version,
     repository: 'sorah-rbpkg/ruby',
     master: if master == null then 'master-%s' % version else master,
@@ -10,5 +10,8 @@
     archs: ['amd64', 'arm64'],
     // Every run of a test series releases into test/ of this repository, never the source repository.
     test: test,
-  },
+  } + (
+    // Bumped to rebuild through a push to main without changing anything else.
+    if try == null then {} else { try: try }
+  ),
 }

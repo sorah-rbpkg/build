@@ -64,7 +64,8 @@ Each series has its own `builds/<series>.jsonnet`, which `bin/generate` renders 
   "dist": "dist/4.0",                   // branches are dist/4.0/<distro>
   "distros": ["jammy", "noble", "resolute", "bookworm", "trixie"],
   "archs": ["amd64", "arm64"],          // the first one also builds source and arch:all packages
-  "test": true                          // every run is a test run; see Test mode
+  "test": true,                         // every run is a test run; see Test mode
+  "try": 2                              // optional; bumping it rebuilds on push to main
 }
 ```
 
@@ -111,7 +112,7 @@ Its GitHub token comes from `GH_TOKEN`, or from sts-cat through the `DebReleaser
 
 - A flaky job: re-run the failed jobs of the run.
 - A packaging fix: commit it to `master`, then `bin/roll <branch>` and push. Only distros without a `debian/` tag are built again.
-- A deliberate rebuild: run the `build` workflow by hand with `series` and optionally `distros`.
+- A deliberate rebuild: bump `try` in `builds/<series>.jsonnet` and push, or run the `build` workflow by hand with `series` and optionally `distros`. Either way, only distros without a `debian/` tag are built unless the run is in test mode.
 
 ### Test mode
 
