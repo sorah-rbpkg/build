@@ -119,5 +119,5 @@ plans.each do |roll, targets|
   File.write(message, ["roll #{roll.source} #{roll.version}", '', "#{repository}@#{roll.commit}", '', summary].join("\n"))
   run('git', 'add', '--', roll.src, roll.json)
   run('git', 'commit', '-q', '-F', message)
-  run('git', 'log', '-1', '--format=%h %s')
+  run('git', '--no-pager', 'show', '--format=%h %s%n%n%b')
 end
