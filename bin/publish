@@ -1,0 +1,260 @@
+#!/usr/bin/env ruby
+# Usage: bin/publish [--no-publish] [--test] [--repository OWNER/REPO] [TAG ...]
+#
+# Takes the draft releases that the build workflow left on the source repository, verifies
+# what CI produced, re-signs the tag and .changes with your GPG key, adds the packages to
+# aptly, and publishes the release. Every phase is skipped when already done, so a run that
+# failed halfway can simply be repeated.
+require 'bundler/inline'
+gemfile do
+  source 'https://rubygems.org'
+  gem 'aws-sdk-core'
+  gem 'httpx'
+end
+require 'digest'
+require 'fileutils'
+require 'json'
+require 'open3'
+require 'optparse'
+require 'aws-sdk-core'
+require 'httpx'
+
+ROOT = File.expand_path('..', __dir__)
+BUILD_REPOSITORY = 'sorah-rbpkg/build'
+OIDC_ISSUER = 'https://token.actions.githubusercontent.com'
+APTLY_REPO_PREFIX = 'sorah-ruby'
+APTLY_ENDPOINT = 's3:sorah-ruby:'
+APTLY_GPG_KEY = '805E57E2327EE86EB8180E0669CEB9D53F0F56A8'
+STSCAT_CONFIG = File.expand_path('~/.nkmi-deb-release.json')
+# Must stay in sync with .github/scripts/draft-release.js.
+RESIGNED_MARKER = '<!-- resigned-by:'
+
+def signer_workflow(name) = "#{BUILD_REPOSITORY}/.github/workflows/#{name}"
+
+def run(*cmd, **opts)
+  puts "  $ #{cmd.join(' ')}"
+  system(*cmd, exception: true, **opts)
+end
+
+def capture(*cmd, **opts)
+  out, status = Open3.capture2(*cmd, **opts)
+  raise "#{cmd.join(' ')} failed" unless status.success?
+  out
+end
+
+def parse_debian_metafile(str)
+  raw = str[/-----BEGIN PGP SIGNED MESSAGE-----\n.+?\n\n(.+)-----BEGIN PGP SIGNATURE-----/m, 1] || str
+  raw.each_line(chomp: true).reject(&:empty?).slice_before { it[0] != ' ' }.to_h do |lines|
+    key, val = lines.first.split(':', 2)
+    [key, [val&.strip, *lines.drop(1).map(&:strip)].reject { it.nil? || it.empty? }]
+  end
+end
+
+def release_body(changes_by_arch:, dsc:, resigned_by: nil)
+  body = ['### Changes', '']
+  changes_by_arch.sort.each do |arch, content|
+    body.push("#### #{arch}", '', '```', content.chomp, '```', '')
+  end
+  body.push('### dsc', '', '```', dsc.chomp, '```')
+  body.push('', "#{RESIGNED_MARKER} #{resigned_by} -->") if resigned_by
+  body.join("\n")
+end
+
+def github_token
+  return ENV['GH_TOKEN'] if ENV['GH_TOKEN']
+
+  config = JSON.parse(File.read(STSCAT_CONFIG))
+  id_token = Aws::STS::Client.new.get_web_identity_token(
+    audience: [config.fetch('stscat_audience')],
+    signing_algorithm: 'ES384',
+    duration_seconds: 300,
+  ).web_identity_token
+  resp = HTTPX.post(
+    "#{config.fetch('stscat_url')}/token",
+    json: {scope: 'sorah-rbpkg', identity: config.fetch('stscat_identity', 'release')},
+    headers: {'authorization' => "Bearer #{id_token}", 'user-agent' => 'sorah-rbpkg-build-publish'},
+  )
+  resp.raise_for_status
+  resp.json.fetch('token')
+end
+
+def gpg_fingerprint
+  out = capture('gpg', '--with-colons', '--list-secret-keys', *ENV['GPGUSER'])
+  out[/^fpr:+(\h{40}):/, 1] or raise 'no GPG secret key found'
+end
+
+# Primary key fingerprints that made a good signature, from gpg's VALIDSIG status lines.
+def valid_signers(status_output)
+  status_output.scan(/^\[GNUPG:\] VALIDSIG .*?(\h{40})\s*$/).flatten
+end
+
+# GitHub replaces characters such as "~" in release asset names with ".".
+def asset_name(file) = File.basename(file).gsub(/[^A-Za-z0-9._+-]/, '.')
+
+# Gives downloaded assets back the names that the .changes and .dsc files refer to them by.
+def restore_asset_names(dir)
+  names = Dir[File.join(dir, '*.{changes,dsc}')].flat_map do |meta|
+    parse_debian_metafile(File.read(meta)).fetch('Files').map { it.split.last }
+  end
+  names.uniq.each do |name|
+    downloaded = File.join(dir, asset_name(name))
+    File.rename(downloaded, File.join(dir, name)) if name != asset_name(name) && File.exist?(downloaded)
+  end
+end
+
+Release = Data.define(:repository, :prefix, :tag, :dir, :git_dir, :changes_paths, :dsc_path, :files, :source, :version, :distro) do
+  def dist_branch = "#{prefix}dist/#{source.delete_prefix('ruby')}/#{distro}"
+  def message = "#{source} Debian release #{version}"
+  def changes_by_arch = changes_paths.to_h { [it[/_([a-z0-9]+)\.changes\z/, 1], File.read(it)] }
+  def dsc = File.read(dsc_path)
+  def signed_files = files.grep(/\.(changes|dsc|buildinfo)\z/)
+  def aptly_files = files.grep(/\.(dsc|d?deb)\z/)
+end
+
+class Publisher
+  def initialize(repository:, prefix:, tags:, publish:)
+    @repository = repository
+    @prefix = prefix
+    @tags = tags
+    @publish = publish
+    @token = github_token
+    @fingerprint = gpg_fingerprint
+    @env = {'GH_TOKEN' => @token}
+    @url = "https://github.com/#{repository}.git"
+  end
+
+  def run_all
+    drafts = JSON.parse(capture(@env, 'gh', 'release', 'list', '--repo', @repository, '--limit', '200', '--json', 'tagName,isDraft'))
+      .select { it.fetch('isDraft') && it.fetch('tagName').start_with?("#{@prefix}debian/") }
+      .map { it.fetch('tagName') }
+    drafts &= @tags unless @tags.empty?
+    abort 'No draft releases to publish' if drafts.empty?
+
+    drafts.sort.each { process(it) }
+  end
+
+  def process(tag)
+    puts "=> #{tag}"
+    release = download(tag)
+    body = view(tag).fetch('body')
+
+    if body.include?("#{RESIGNED_MARKER} #{@fingerprint}")
+      puts ' * already re-signed, skipping verification'
+    else
+      verify(release)
+      resign(release)
+    end
+    publish(release) if @publish
+  end
+
+  def view(tag)
+    JSON.parse(capture(@env, 'gh', 'release', 'view', tag, '--repo', @repository, '--json', 'isDraft,body'))
+  end
+
+  def download(tag)
+    dir = File.join(ROOT, 'tmp', 'publish', tag.tr('/', '_'))
+    FileUtils.rm_rf(dir)
+    FileUtils.mkdir_p(dir)
+    run(@env, 'gh', 'release', 'download', tag, '--repo', @repository, '--dir', dir)
+    restore_asset_names(dir)
+
+    git_dir = File.join(ROOT, 'tmp', 'publish', "#{@repository.tr('/', '_')}.git")
+    run('git', 'init', '-q', '--bare', git_dir) unless File.directory?(git_dir)
+
+    files = Dir[File.join(dir, '*')].sort
+    changes_paths = files.grep(/\.changes\z/)
+    dsc_paths = files.grep(/\.dsc\z/)
+    raise "#{tag}: expected one .dsc, got #{dsc_paths.size}" unless dsc_paths.size == 1
+
+    fields = parse_debian_metafile(File.read(changes_paths.first))
+    Release.new(
+      repository: @repository, prefix: @prefix, tag:, dir:, git_dir:, changes_paths:, dsc_path: dsc_paths.first, files:,
+      source: fields.fetch('Source').first, version: fields.fetch('Version').first, distro: fields.fetch('Distribution').first,
+    )
+  end
+
+  def verify(release)
+    puts ' * verifying what CI produced'
+    git = ['git', '--git-dir', release.git_dir]
+    run(*git, 'fetch', '-q', '--filter=blob:none', '--no-tags', '--force', @url,
+      "refs/tags/#{release.tag}:refs/tags/#{release.tag}",
+      "refs/heads/#{release.dist_branch}:refs/remotes/origin/#{release.dist_branch}")
+    run('gitsign', 'verify-tag',
+      "--certificate-identity=https://github.com/#{signer_workflow('_distro.yml')}@refs/heads/main",
+      "--certificate-oidc-issuer=#{OIDC_ISSUER}", release.tag, chdir: release.git_dir)
+    run(*git, 'merge-base', '--is-ancestor', "#{release.tag}^{commit}", "refs/remotes/origin/#{release.dist_branch}")
+
+    release.files.each do |file|
+      workflow = file.end_with?('.orig.tar.gz') ? 'build.yml' : '_distro.yml'
+      run(@env, 'gh', 'attestation', 'verify', file, '--repo', BUILD_REPOSITORY,
+        '--signer-workflow', signer_workflow(workflow), '--source-ref', 'refs/heads/main', out: File::NULL)
+    end
+
+    [*release.changes_paths, release.dsc_path].each do |meta|
+      parse_debian_metafile(File.read(meta)).fetch('Checksums-Sha256').each do |line|
+        sha256, _size, name = line.split
+        actual = Digest::SHA256.file(File.join(release.dir, name)).hexdigest
+        raise "#{name}: sha256 #{actual} does not match #{File.basename(meta)}" unless actual == sha256
+      end
+    end
+  end
+
+  def resign(release)
+    puts " * re-signing with #{@fingerprint}"
+    raise "#{release.tag} is no longer a draft" unless view(release.tag).fetch('isDraft')
+
+    git = ['git', '--git-dir', release.git_dir]
+    commit = capture(*git, 'rev-parse', "#{release.tag}^{commit}").strip
+    run(*git, '-c', 'gpg.format=openpgp', 'tag', '-s', '-f', '-m', release.message, release.tag, commit)
+    run('sorah-debsign', *release.changes_paths)
+
+    # Checked again right before the irreversible part, which replaces the tag that CI pushed.
+    raise "#{release.tag} is no longer a draft" unless view(release.tag).fetch('isDraft')
+    puts "  $ git push --force #{@url} refs/tags/#{release.tag}"
+    auth = "http.https://github.com/.extraheader=AUTHORIZATION: basic #{["x-access-token:#{@token}"].pack('m0')}"
+    system(*git, '-c', auth, 'push', '--force', @url, "refs/tags/#{release.tag}", exception: true)
+    # Uploaded under the names GitHub gave them, so --clobber finds the assets to replace.
+    upload_dir = File.join(release.dir, '.upload')
+    FileUtils.mkdir_p(upload_dir)
+    uploads = release.signed_files.map do |file|
+      File.join(upload_dir, asset_name(file)).tap { FileUtils.cp(file, it) }
+    end
+    run(@env, 'gh', 'release', 'upload', release.tag, '--repo', @repository, '--clobber', *uploads)
+
+    notes = File.join(release.dir, '.notes')
+    File.write(notes, release_body(changes_by_arch: release.changes_by_arch, dsc: release.dsc, resigned_by: @fingerprint))
+    run(@env, 'gh', 'release', 'edit', release.tag, '--repo', @repository, '--notes-file', notes)
+  end
+
+  def publish(release)
+    puts ' * publishing'
+    run('git', '--git-dir', release.git_dir, 'fetch', '-q', '--filter=blob:none', '--no-tags', '--force', @url,
+      "refs/tags/#{release.tag}:refs/tags/#{release.tag}")
+    _, status_output, _ = Open3.capture3('git', '--git-dir', release.git_dir, 'verify-tag', '--raw', release.tag)
+    raise "#{release.tag} is not signed by #{@fingerprint}" unless valid_signers(status_output).include?(@fingerprint)
+
+    release.signed_files.each do |file|
+      _, status_output, _ = Open3.capture3('gpg', '--status-fd', '2', '--verify', file)
+      raise "#{File.basename(file)} is not signed by #{@fingerprint}" unless valid_signers(status_output).include?(@fingerprint)
+    end
+
+    run('aptly', 'repo', 'add', "#{APTLY_REPO_PREFIX}-#{release.distro}", *release.aptly_files)
+    run('aptly', 'publish', 'update', "-gpg-key=#{APTLY_GPG_KEY}", release.distro, APTLY_ENDPOINT)
+    run(@env, 'gh', 'release', 'edit', release.tag, '--repo', @repository, '--draft=false')
+  end
+end
+
+publish = true
+repository = 'sorah-rbpkg/ruby'
+prefix = ''
+OptionParser.new do |o|
+  o.on('--no-publish', 'Stop after re-signing') { publish = false }
+  o.on('--repository OWNER/REPO') { repository = it }
+  o.on('--test', 'Work on the test/ releases of a test run, and never publish') do
+    repository = BUILD_REPOSITORY
+    prefix = 'test/'
+    publish = false
+  end
+end.parse!(ARGV)
+
+Publisher.new(repository:, prefix:, tags: ARGV, publish:).run_all
