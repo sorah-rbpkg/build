@@ -3,6 +3,6 @@ local series = import 'series.libsonnet';
 series.ruby(
   '4.0',
   master='master',
-  commit='51f86ee24374c9bc4924fbfb7d536e5835bac544',
+  commit='4de889346eb34a5b2ff4ab6657961726acabd66a',
   distros=['jammy', 'noble', 'resolute', 'bookworm', 'trixie'],
 )
