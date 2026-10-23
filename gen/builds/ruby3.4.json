@@ -3,7 +3,7 @@
       "amd64",
       "arm64"
    ],
-   "commit": "08ad1d5e783e043d09d91de2d8f84c6f719b9300",
+   "commit": "0706bcd9de4a21703163f83c3a95e9f9e86c3dd8",
    "dist": "dist/3.4",
    "distros": [
       "jammy",
