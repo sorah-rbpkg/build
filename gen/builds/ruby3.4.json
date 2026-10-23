@@ -17,5 +17,6 @@
    "repository": "sorah-rbpkg/ruby",
    "smoke": "ruby",
    "source": "ruby3.4",
-   "test": false
+   "test": false,
+   "try": 2
 }
