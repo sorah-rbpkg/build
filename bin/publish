@@ -325,7 +325,7 @@ class Publisher
   # Repeatable: the tag is force-pushed and the files replaced, both with what sign produced.
   def push_signed(release)
     puts ' * pushing the re-signed tag and files'
-    draft = view(release.tag)
+    draft = view(release)
     raise "#{release.tag} is no longer a draft" unless draft.fetch('isDraft')
     attestations = attestation_section(draft.fetch('body'))
 
