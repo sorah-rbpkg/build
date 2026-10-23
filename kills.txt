@@ -1,0 +1,2 @@
+# Builds to kill, one "JOB_ID RUN_ATTEMPT" per line, as their debuild step prints it.
+# A running build reads this from main every minute.
