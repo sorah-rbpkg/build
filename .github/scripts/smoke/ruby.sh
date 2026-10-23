@@ -9,7 +9,8 @@ mapfile -t debs < <(built_debs)
 v="${SOURCE#ruby}"
 
 # ruby-defaults provides the unsuffixed commands, but only exists for the series it currently points at.
-defaults_version="$(apt-cache madison ruby | awk -v prefix="1:${v}+" 'index($3, prefix) == 1 { print $3; exit }')"
+# The distro's own ruby-defaults can be of the same series, as on trixie.
+defaults_version="$(apt-cache madison ruby | awk -v prefix="1:${v}+" 'index($3, prefix) == 1 && /cache\.ruby-lang\.org/ { print $3; exit }')"
 defaults=()
 sfx="$v"
 if [[ -n "$defaults_version" ]]; then
