@@ -1,10 +1,12 @@
 #!/usr/bin/env ruby
-# Usage: bin/import [--source-dir DIR] VERSION...
+# Usage: bin/import [--source-dir DIR] [--ahead BRANCH=SHA]... VERSION...
 #        bin/import --push [--source-dir DIR] VERSION...
 #
 # Imports the ruby-lang.org release of each VERSION into a local checkout of sorah-rbpkg/ruby, ../ruby by
 # default: gbp import-orig puts it on upstream-N.M with a signed upstream/<version> tag and merges it into
 # the series' debian branch, then a "releng" commit adds the changelog entry. Nothing is pushed.
+#
+# Each branch it touches must match origin, unless --ahead acknowledges the unpushed commits up to SHA.
 #
 # --push pushes those branches and tags after showing what they add.
 require 'date'
@@ -47,12 +49,18 @@ def fetch(url)
 end
 
 push = false
+ahead = {}
 source_dir = File.expand_path('../ruby', ROOT)
 OptionParser.new do |o|
   o.on('--push', 'Push what an earlier run imported') { push = true }
   o.on('--source-dir DIR', 'Local checkout of sorah-rbpkg/ruby') { source_dir = File.expand_path(it) }
+  o.on('--ahead BRANCH=SHA', 'Import on top of unpushed commits up to SHA on BRANCH') do
+    branch, sha = it.split('=', 2)
+    abort "--ahead takes BRANCH=SHA, not #{it}" unless sha&.match?(/\A\h{40}\z/)
+    ahead[branch] = sha
+  end
 end.parse!(ARGV)
-abort 'Usage: bin/import [--push] [--source-dir DIR] VERSION...' if ARGV.empty?
+abort 'Usage: bin/import [--push] [--source-dir DIR] [--ahead BRANCH=SHA]... VERSION...' if ARGV.empty?
 abort "#{source_dir} is not a checkout of #{REPOSITORY}; pass --source-dir" unless File.directory?(File.join(source_dir, '.git'))
 
 git = ->(*args) { capture('git', *args, chdir: source_dir) }
@@ -102,7 +110,9 @@ imports.each do |imp|
     remote = git.('rev-parse', "refs/remotes/origin/#{b}").strip
     if git_ok.('rev-parse', '--verify', '-q', "refs/heads/#{b}")
       local = git.('rev-parse', "refs/heads/#{b}").strip
-      abort "#{b} is at #{local} locally but at #{remote} on origin" unless local == remote
+      next if local == remote
+      abort "#{b} is at #{local} locally but at #{remote} on origin; pass --ahead #{b}=#{local} to import on top of it" unless ahead[b] == local
+      abort "#{b} at #{local} does not descend from #{remote} on origin" unless git_ok.('merge-base', '--is-ancestor', remote, local)
     else
       git.('branch', '--track', b, "refs/remotes/origin/#{b}")
     end
