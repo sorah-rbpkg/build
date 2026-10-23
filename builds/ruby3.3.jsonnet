@@ -5,5 +5,5 @@ series.ruby(
   commit='cccd124402400ec39dcc402fc790145d0e9f65d2',
   distros=['focal', 'jammy', 'noble', 'bullseye', 'bookworm', 'trixie'],
   test=false,
-  try=4,
+  try=5,
 )

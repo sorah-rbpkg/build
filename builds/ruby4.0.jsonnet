@@ -6,5 +6,5 @@ series.ruby(
   commit='bebc88559e74d908d6d20bcaec71f5c7c955d21c',
   distros=['jammy', 'noble', 'resolute', 'bookworm', 'trixie'],
   test=false,
-  try=2,
+  try=3,
 )
