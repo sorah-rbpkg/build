@@ -1,0 +1,21 @@
+{
+   "archs": [
+      "amd64"
+   ],
+   "commit": "92f753ba65ab97f7b161886ef78f261ad4379f49",
+   "dist": "dist",
+   "distros": [
+      "jammy",
+      "noble",
+      "resolute",
+      "bookworm",
+      "trixie"
+   ],
+   "large_runner": false,
+   "master": "next",
+   "proposed": true,
+   "repository": "sorah-rbpkg/rubygems-integration",
+   "smoke": "rubygems-integration",
+   "source": "rubygems-integration",
+   "test": true
+}

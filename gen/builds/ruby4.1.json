@@ -1,0 +1,20 @@
+{
+   "archs": [
+      "amd64",
+      "arm64"
+   ],
+   "commit": "f01081914ef6f981bc9574e60f8ac61512f685d5",
+   "dist": "dist/4.1",
+   "distros": [
+      "noble",
+      "resolute",
+      "trixie"
+   ],
+   "large_runner": true,
+   "master": "next-4.1",
+   "proposed": true,
+   "repository": "sorah-rbpkg/ruby",
+   "smoke": "ruby",
+   "source": "ruby4.1",
+   "test": true
+}
