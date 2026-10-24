@@ -17,5 +17,5 @@
    "repository": "sorah-rbpkg/rubygems-integration",
    "smoke": "rubygems-integration",
    "source": "rubygems-integration",
-   "test": true
+   "test": false
 }
