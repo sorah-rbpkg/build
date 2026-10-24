@@ -72,8 +72,8 @@ jobs:
     needs: [plan]
     if: needs.plan.outputs.targets != '[]'
     runs-on: ${{ matrix.target.runner }}
-    # The standard runners build and test Ruby in about half an hour.
-    timeout-minutes: 60
+    # The standard runners took up to an hour for an Ubuntu distro; the watchdog still kills a hung build sooner.
+    timeout-minutes: 120
     permissions:
       contents: read
       id-token: write
@@ -160,6 +160,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # Fails when this arch's build did not finish, which smoke would otherwise pass on the released packages.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ matrix.target.artifact }}
+          path: out
 
       # arch:all packages come from the first arch's artifact.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
