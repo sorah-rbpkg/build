@@ -38,8 +38,10 @@ has_executable() {
   "ruby${sfx}" -e 'exit Gem::Specification.find_by_name(ARGV[0]).executables.include?(ARGV[0])' "$1"
 }
 if has_executable minitest; then
-  # minitest 6 exits 1 after printing its version.
-  { "minitest${v}" --version || true; } | grep '^minitest '
+  # minitest 6.0.6 and later print nothing for --version, so it runs a test instead.
+  test_dir="$(mktemp -d)"
+  printf 'require "minitest/autorun"\nclass SmokeTest < Minitest::Test\n  def test_smoke = assert(true)\nend\n' > "${test_dir}/smoke_test.rb"
+  (cd "$test_dir" && "minitest${v}" smoke_test.rb) | grep '^1 runs, 1 assertions, 0 failures, 0 errors'
 fi
 "racc${v}" --version
 "rake${sfx}" --version
