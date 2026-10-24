@@ -3,51 +3,8 @@
 #
 # Prints the build targets as JSON: {"targets": [...], "origs": [...]}.
 # A distro whose debian/ tag already exists on the source repository is left out.
-require 'fileutils'
-require 'json'
-require 'open3'
 require 'optparse'
-require 'tmpdir'
-
-ROOT = File.expand_path('..', __dir__)
-BUILD_REPOSITORY = ENV.fetch('GITHUB_REPOSITORY', 'sorah-rbpkg/build')
-COMMITTERS_KEYRING = File.join(ROOT, 'keys', 'committers.asc')
-# Any other distro is taken to be an Ubuntu release.
-DEBIAN_CODENAMES = %w[stretch buster bullseye bookworm trixie forky duke]
-
-Series = Data.define(:file, :source, :repository, :master, :commit, :dist, :distros, :archs, :smoke, :large_runner, :test) do
-  def self.load(path)
-    config = JSON.parse(File.read(path))
-    new(
-      file: path,
-      source: config.fetch('source'),
-      repository: config.fetch('repository'),
-      master: config.fetch('master'),
-      commit: config.fetch('commit'),
-      dist: config.fetch('dist'),
-      distros: config.fetch('distros'),
-      archs: config.fetch('archs'),
-      smoke: config.fetch('smoke'),
-      large_runner: config.fetch('large_runner'),
-      test: config.fetch('test'),
-    )
-  end
-
-  def url = "https://github.com/#{repository}.git"
-  # Unique across series, unlike source: ruby-defaults has one series per default Ruby.
-  def id = File.basename(file, '.json')
-end
-
-def git(*args, dir: nil)
-  cmd = dir ? ['git', '-C', dir, *args] : ['git', *args]
-  out, status = Open3.capture2(*cmd)
-  raise "#{cmd.join(' ')} failed" unless status.success?
-  out
-end
-
-def git?(*args, dir:)
-  system('git', '-C', dir, *args, out: File::NULL, err: File::NULL)
-end
+require_relative '../lib/plan'
 
 def changed_series(since)
   # A push that creates the branch has no previous commit to compare with.
@@ -68,30 +25,6 @@ def build_requested?(since, path)
   JSON.parse(old).slice(*BUILD_FIELDS) != new.slice(*BUILD_FIELDS)
 end
 
-# Only commits and upstream tags signed by a key in keys/committers.asc may be built.
-# kind is "commit" or "tag", for git verify-commit or verify-tag.
-def verify_signature(kind, ref, dir:)
-  Dir.mktmpdir('plan-gnupg') do |gnupghome|
-    env = {'GNUPGHOME' => gnupghome}
-    _, status = Open3.capture2e(env, 'gpg', '--batch', '--import', COMMITTERS_KEYRING)
-    raise "cannot import #{COMMITTERS_KEYRING}" unless status.success?
-    trusted = Open3.capture2(env, 'gpg', '--batch', '--with-colons', '--list-keys').first.scan(/^fpr:+(\h{40}):/).flatten
-
-    _, raw, _ = Open3.capture3(env, 'git', '-C', dir, "verify-#{kind}", '--raw', ref)
-    signer = raw[/^\[GNUPG:\] VALIDSIG .*?(\h{40})\s*$/, 1]
-    raise "#{ref} is not signed by a key in #{File.basename(COMMITTERS_KEYRING)}" unless signer && trusted.include?(signer)
-  end
-end
-
-# The build job's runs-on. The large ones are org-paid, 64 cores each, in the runner group that admits public repositories.
-def runner_for(arch, large:)
-  if large
-    {group: 'build', labels: arch == 'arm64' ? 'ubuntu-24.04-arm64-large' : 'ubuntu-24.04-large'}
-  else
-    arch == 'arm64' ? 'ubuntu-24.04-arm' : 'ubuntu-24.04'
-  end
-end
-
 # Same transform as sorah-debuild's debian/ tag naming (DEP-14).
 def tag_for(version)
   "debian/#{version.gsub(/\.(?=\.|\z|lock\z)/, '.#').tr('~:', '_%')}"
@@ -101,9 +34,7 @@ def plan_series(series, distro_filter:, test:)
   raise "#{series.file}: dist must be dist or start with dist/" unless series.dist == 'dist' || series.dist.start_with?('dist/')
   raise "#{series.file}: commit must be a full SHA" unless series.commit.match?(/\A\h{40}\z/)
 
-  dir = File.join(ROOT, 'tmp', 'plan', series.repository.tr('/', '_'))
-  git('init', '-q', '--bare', dir) unless File.directory?(dir)
-  git('fetch', '-q', '--filter=blob:none', '--no-tags', series.url, "+refs/heads/#{series.master}:refs/remotes/origin/#{series.master}", dir:)
+  dir = fetch_master(series)
   unless git?('merge-base', '--is-ancestor', series.commit, "refs/remotes/origin/#{series.master}", dir:)
     raise "#{series.file}: #{series.commit} is not on #{series.repository} #{series.master}"
   end
@@ -133,10 +64,6 @@ def plan_series(series, distro_filter:, test:)
 
   series.distros.filter_map do |distro|
     next if distro_filter && !distro_filter.include?(distro)
-    # dockerfiles/<id>/ holds overrides for a single series.
-    dockerfile = ["dockerfiles/#{series.id}/Dockerfile.#{distro}", "dockerfiles/Dockerfile.#{distro}"]
-      .find { File.exist?(File.join(ROOT, it)) } or raise "#{series.file}: no dockerfiles/Dockerfile.#{distro}"
-
     deb_version = m[:version].sub('~dist', "~#{distro}")
     tag = tag_for(deb_version)
     if !test && existing_tags.include?(tag)
@@ -167,8 +94,8 @@ def plan_series(series, distro_filter:, test:)
       orig_name:,
       upstream_tag:,
       upstream_commit:,
-      image: "#{DEBIAN_CODENAMES.include?(distro) ? 'debian' : 'ubuntu'}:#{distro}",
-      dockerfile:,
+      image: image_for(distro),
+      dockerfile: series.dockerfile(distro),
       smoke: series.smoke,
       test:,
       release_repository: test ? BUILD_REPOSITORY : series.repository,

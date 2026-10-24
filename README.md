@@ -83,6 +83,17 @@ A test run goes through every job, approval included, without writing to sorah-r
 
 `bin/publish --test` verifies and re-signs those drafts with the token of your `gh` login, and never runs aptly or publishes. `bin/cleanup-test` deletes every `test/` release, tag and branch, so the next test run starts from scratch. It refuses while a `build` run is active; `--dry-run` lists what it would delete.
 
+### Nightly packages
+
+[`nightly.yml`](./.github/workflows/nightly.yml) builds every `rubyN.M` series from the [snapshot](https://cache.ruby-lang.org/pub/ruby/snapshot/) of its `ruby_N_M` branch each Monday, on the standard runners. Nothing is tagged, released or added to the apt repository: the packages stay as artifacts of the run, `nightly-<series>-<distro>-<arch>`, for 90 days.
+
+- The version is `<X.Y.Z>+git<YYYYMMDD>.g<commit>-0nkmi0~<distro>`, from the snapshot's `version.h` and `revision.h`. It sorts after the release the branch is at and before the next one, and its `0nkmi0` below a release's `0nkmi1`. A branch before its first release, with patchlevel `-1`, gets `~git` instead.
+- The snapshot is the orig tarball as is, checked against the sha256 in its `snapshot-ruby_N_M.json`. Each distro builds the `debian/` of its `dist/N.M/<distro>` branch, or of the series `commit` before its first release, without the patches the snapshot already has.
+- Distros that pass smoke on every arch are rolled into [`nightly.json`](https://github.com/sorah-rbpkg/dockerfiles/blob/master/nightly.json) of sorah-rbpkg/dockerfiles, which builds the `N.M.next` images from the artifacts.
+- A series whose snapshot is still at the revision `nightly.json` has for every distro is skipped.
+
+`bin/plan-nightly` shows locally what a run would build. Running `nightly` by hand takes a `series`, `force` to build an unchanged snapshot, and `roll` unchecked to leave sorah-rbpkg/dockerfiles alone.
+
 ## Configuration
 
 Each series has its own `builds/<series>.jsonnet`, which `bin/generate` renders with jrsonnet into `gen/builds/<series>.json`, the file the workflows read. `builds/series.libsonnet` holds the defaults they share. `hk check` fails when the two disagree.
@@ -140,9 +151,9 @@ Done once for sorah-rbpkg, and kept for reference.
 
 ### 1. Configure this repository
 
-Create the `release` environment with a required reviewer and the secret `STS_CAT_ENDPOINT`.
+Create the `release` environment with a required reviewer and the secret `STS_CAT_ENDPOINT`, and the `nightly` environment, limited to `main`, with the same secret.
 
-### 2. Allow the release job to write sorah-rbpkg/ruby
+### 2. Allow the release and roll jobs to write sorah-rbpkg/ruby and sorah-rbpkg/dockerfiles
 
 The release job obtains its token from [sts-cat](https://github.com/sorah/sts-cat). Add an org-level trust policy:
 
@@ -155,6 +166,22 @@ max_token_lifetime = 3600
 
 [claim_pattern]
 job_workflow_ref = "sorah-rbpkg/build/\\.github/workflows/_distro\\.yml@refs/heads/main"
+
+[permissions]
+contents = "write"
+```
+
+The roll job of `nightly.yml` pushes to sorah-rbpkg/dockerfiles through another:
+
+```toml
+# sorah-rbpkg/.github: .github/sts-cat/nightly.sts.toml
+issuer = "https://token.actions.githubusercontent.com"
+subject = "repo:sorah-rbpkg@19392696/build@1429643459:environment:nightly"
+repositories = ["dockerfiles"]
+max_token_lifetime = 3600
+
+[claim_pattern]
+job_workflow_ref = "sorah-rbpkg/build/\\.github/workflows/nightly\\.yml@refs/heads/main"
 
 [permissions]
 contents = "write"

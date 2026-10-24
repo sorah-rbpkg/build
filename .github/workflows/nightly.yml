@@ -1,0 +1,235 @@
+# Builds packages of the cache.ruby-lang.org snapshot of each rubyN.M series' branch, kept as artifacts of the run,
+# and rolls those that pass smoke into sorah-rbpkg/dockerfiles. Nothing is tagged or released.
+name: nightly
+
+# No concurrency group: a roll only fast-forwards nightly.json, so overlapping runs cannot lose each other's work.
+# jactionlint ignore=concurrency-limits
+on:
+  schedule:
+    # Monday, after Sunday's snapshot at around 18:45 UTC.
+    - cron: '17 0 * * 1'
+  workflow_dispatch:
+    inputs:
+      series:
+        description: Series under builds/, e.g. ruby4.0 (default every rubyN.M)
+        required: false
+        type: string
+      force:
+        description: Build even when nightly.json already has the snapshot's revision
+        required: false
+        type: boolean
+        default: false
+      roll:
+        description: Roll the packages that pass smoke into sorah-rbpkg/dockerfiles
+        required: false
+        type: boolean
+        default: true
+
+permissions: {}
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        with:
+          install_args: ruby
+
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        id: plan
+        with:
+          script: await require('./.github/scripts/nightly-plan.js')({ context, core, exec })
+
+      - name: checksums
+        if: steps.plan.outputs.targets != '[]'
+        run: sha256sum orig/*
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        if: steps.plan.outputs.targets != '[]'
+        with:
+          subject-path: orig/*
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.plan.outputs.targets != '[]'
+        with:
+          name: nightly-orig
+          path: orig/
+          if-no-files-found: error
+
+  build:
+    name: build (${{ matrix.target.id }} ${{ matrix.target.distro }} ${{ matrix.target.arch }})
+    needs: [plan]
+    if: needs.plan.outputs.targets != '[]'
+    runs-on: ${{ matrix.target.runner }}
+    # The standard runners build and test Ruby in about half an hour.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Only debian/; the rest of the tree comes from the snapshot.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ matrix.target.repository }}
+          ref: ${{ matrix.target.packaging_commit }}
+          path: src
+          sparse-checkout: debian
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nightly-orig
+          path: orig
+
+      - name: checksums
+        run: |
+          echo "${ORIG_SHA256}  orig/${ORIG_NAME}" | sha256sum -c
+        env:
+          ORIG_NAME: ${{ matrix.target.orig_name }}
+          ORIG_SHA256: ${{ matrix.target.orig_sha256 }}
+
+      - name: prepare
+        run: .github/scripts/nightly-prepare.sh
+        env:
+          SOURCE: ${{ matrix.target.source }}
+          ORIG_NAME: ${{ matrix.target.orig_name }}
+          CHANGELOG_VERSION: ${{ matrix.target.changelog_version }}
+          BRANCH: ${{ matrix.target.branch }}
+          REVISION: ${{ matrix.target.revision }}
+          SOURCE_TAR: ${{ runner.temp }}/nightly-source.tar
+
+      - name: debuild
+        run: .github/scripts/debuild.sh
+        env:
+          SOURCE: ${{ matrix.target.source }}
+          DISTRO: ${{ matrix.target.distro }}
+          ORIG_NAME: ${{ matrix.target.orig_name }}
+          DOCKERFILE: ${{ matrix.target.dockerfile }}
+          BUILD: ${{ matrix.target.build }}
+          SOURCE_TAR: ${{ runner.temp }}/nightly-source.tar
+          JOB_ID: ${{ job.check_run_id }}
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: out/*
+
+      - name: checksums
+        run: sha256sum out/*
+
+      # Kept as long as GitHub allows, as sorah-rbpkg/dockerfiles rebuilds its images from them until the next roll.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.target.artifact }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 90
+
+  smoke:
+    name: smoke (${{ matrix.target.id }} ${{ matrix.target.distro }} ${{ matrix.target.arch }})
+    needs: [plan, build]
+    if: ${{ !cancelled() && needs.plan.outputs.targets != '[]' }}
+    runs-on: ${{ matrix.target.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # arch:all packages come from the first arch's artifact.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: nightly-${{ matrix.target.id }}-${{ matrix.target.distro }}-*
+          merge-multiple: true
+          path: out
+
+      - name: checksums
+        run: sha256sum out/*
+
+      - name: smoke
+        run: .github/scripts/smoke.sh
+        env:
+          IMAGE: ${{ matrix.target.image }}
+          SMOKE: ${{ matrix.target.smoke }}
+          SOURCE: ${{ matrix.target.source }}
+          DISTRO: ${{ matrix.target.distro }}
+          ARCH: ${{ matrix.target.arch }}
+
+      # Tells roll this artifact passed.
+      - name: record
+        run: |
+          mkdir -p passed
+          touch "passed/${ARTIFACT}"
+        env:
+          ARTIFACT: ${{ matrix.target.artifact }}
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-${{ matrix.target.artifact }}
+          path: passed/
+          if-no-files-found: error
+          retention-days: 1
+
+  roll:
+    needs: [plan, smoke]
+    if: ${{ !cancelled() && needs.plan.outputs.targets != '[]' && inputs.roll != false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: nightly
+      url: https://github.com/sorah-rbpkg/dockerfiles/blob/master/nightly.json
+    permissions:
+      contents: read
+      # sts-cat.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: smoke-nightly-*
+          merge-multiple: true
+          path: passed
+
+      - uses: sorah/sts-cat/.github/actions/exchange-token@19e1177084d0f2dedb575ab1b78bd2a1a100f6e9 # main
+        id: token
+        with:
+          endpoint: ${{ secrets.STS_CAT_ENDPOINT }}
+          scope: ${{ github.repository_owner }}
+          identity: nightly
+          audience: https://sts-cat.nkmi.me
+
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TARGETS: ${{ needs.plan.outputs.targets }}
+          SMOKE_DIR: passed
+        with:
+          github-token: ${{ steps.token.outputs.token }}
+          script: await require('./.github/scripts/nightly-roll.js')({ github, context, core })

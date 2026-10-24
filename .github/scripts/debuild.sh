@@ -12,7 +12,12 @@ out="${GITHUB_WORKSPACE}/out"
 work="${RUNNER_TEMP}/debuild"
 mkdir -p "$out" "$work"
 
-git -C "$src" archive --format=tar --prefix "${SOURCE}/" HEAD > "${work}/source.tar"
+# A nightly brings its own tree from nightly-prepare.sh.
+if [[ -n "${SOURCE_TAR:-}" ]]; then
+  cp "$SOURCE_TAR" "${work}/source.tar"
+else
+  git -C "$src" archive --format=tar --prefix "${SOURCE}/" HEAD > "${work}/source.tar"
+fi
 if [[ -n "$ORIG_NAME" ]]; then
   cp "${GITHUB_WORKSPACE}/orig/${ORIG_NAME}" "${work}/"
 fi
