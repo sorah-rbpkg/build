@@ -1,10 +1,12 @@
 #!/usr/bin/env ruby
-# Usage: bin/import [--source-dir DIR] [--ahead BRANCH=SHA]... VERSION...
-#        bin/import --push [--source-dir DIR] VERSION...
+# Usage: bin/import [--source-dir DIR] [--branch SERIES=BRANCH]... [--ahead BRANCH=SHA]... VERSION...
+#        bin/import --push [--source-dir DIR] [--branch SERIES=BRANCH]... VERSION...
 #
 # Imports the ruby-lang.org release of each VERSION into a local checkout of sorah-rbpkg/ruby, ../ruby by
 # default: gbp import-orig puts it on upstream-N.M with a signed upstream/<version> tag and merges it into
 # the series' debian branch, then a "releng" commit adds the changelog entry. Nothing is pushed.
+#
+# A series lives on master or master-N.M, or on the debian branch --branch names, such as next-N.M for a preview.
 #
 # Each branch it touches must match origin, unless --ahead acknowledges the unpushed commits up to SHA.
 #
@@ -50,17 +52,23 @@ end
 
 push = false
 ahead = {}
+branches = {}
 source_dir = File.expand_path('../ruby', ROOT)
 OptionParser.new do |o|
   o.on('--push', 'Push what an earlier run imported') { push = true }
   o.on('--source-dir DIR', 'Local checkout of sorah-rbpkg/ruby') { source_dir = File.expand_path(it) }
+  o.on('--branch SERIES=BRANCH', 'Debian branch of SERIES, rather than master or master-N.M') do
+    series, branch = it.split('=', 2)
+    abort "--branch takes SERIES=BRANCH, not #{it}" unless series&.match?(/\A\d+\.\d+\z/) && branch && !branch.empty?
+    branches[series] = branch
+  end
   o.on('--ahead BRANCH=SHA', 'Import on top of unpushed commits up to SHA on BRANCH') do
     branch, sha = it.split('=', 2)
     abort "--ahead takes BRANCH=SHA, not #{it}" unless sha&.match?(/\A\h{40}\z/)
     ahead[branch] = sha
   end
 end.parse!(ARGV)
-abort 'Usage: bin/import [--push] [--source-dir DIR] [--ahead BRANCH=SHA]... VERSION...' if ARGV.empty?
+abort 'Usage: bin/import [--push] [--source-dir DIR] [--branch SERIES=BRANCH]... [--ahead BRANCH=SHA]... VERSION...' if ARGV.empty?
 abort "#{source_dir} is not a checkout of #{REPOSITORY}; pass --source-dir" unless File.directory?(File.join(source_dir, '.git'))
 
 git = ->(*args) { capture('git', *args, chdir: source_dir) }
@@ -71,7 +79,7 @@ run('git', 'fetch', '-q', '--tags', 'origin', chdir: source_dir)
 imports = ARGV.map do |version|
   series = version[/\A(\d+\.\d+)\./, 1] or abort "#{version} is not a ruby version"
   # The newest series lives on master, the others on master-N.M.
-  branch = ['master', "master-#{series}"].find do |b|
+  branch = [*branches[series] || ['master', "master-#{series}"]].find do |b|
     git_ok.('rev-parse', '--verify', '-q', "refs/remotes/origin/#{b}") &&
       git.('show', "refs/remotes/origin/#{b}:debian/changelog").start_with?("ruby#{series} ")
   end
@@ -151,4 +159,5 @@ imports.each do |imp|
   run(File.join(ROOT, 'bin', 'verify-orig'), orig, imp.upstream_version)
 end
 
-puts "Review #{source_dir}, then: bin/import --push #{imports.map(&:version).join(' ')}"
+branch_args = imports.filter_map { "--branch #{it.series}=#{it.branch}" if branches[it.series] }
+puts "Review #{source_dir}, then: #{['bin/import --push', *branch_args, *imports.map(&:version)].join(' ')}"
