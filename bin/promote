@@ -1,0 +1,121 @@
+#!/usr/bin/env ruby
+# Usage: bin/promote [--dry-run] [--repository OWNER/REPO] [--dockerfiles-dir DIR] TAG ...
+#
+# Promotes releases that bin/publish put into <distro>-proposed: copies the packages their .changes
+# list into <distro> in aptly, publishes it, and graduates each release by leaving pre-release and
+# rewriting its Suite: line. The assets stay as they are, as a published release cannot change them.
+# Then it relays released versions to sorah-rbpkg/dockerfiles, as bin/publish does.
+require 'bundler/inline'
+gemfile do
+  source 'https://rubygems.org'
+  gem 'aws-sdk-core'
+  gem 'httpx'
+end
+require 'optparse'
+require 'tmpdir'
+require_relative '../lib/release'
+
+Promotion = Data.define(:repository, :tag, :distro, :body, :queries) do
+  def proposed = "#{distro}-proposed"
+end
+
+class Promoter
+  def initialize(repositories:, tags:, dry_run:, token:, relay:)
+    @repositories = repositories
+    @tags = tags
+    @dry_run = dry_run
+    @relay = relay
+    @env = {'GH_TOKEN' => token}
+  end
+
+  def run_all
+    @relay.check
+    promotions = @tags.map { load(it) }
+    promotions.each do |promotion|
+      puts "=> #{promotion.tag}: #{promotion.proposed} -> #{promotion.distro}"
+      promotion.queries.each { puts "  #{it}" }
+    end
+    if @dry_run
+      promotions.each { puts " * would copy #{it.tag} from #{APTLY_REPO_PREFIX}-#{it.proposed} to #{APTLY_REPO_PREFIX}-#{it.distro}" }
+      promotions.map(&:distro).uniq.each { puts " * would publish #{it}" }
+      promotions.each { puts " * would graduate #{it.tag}" }
+      @relay.sync
+      return
+    end
+
+    promotions.each do |promotion|
+      run('aptly', 'repo', 'copy', "#{APTLY_REPO_PREFIX}-#{promotion.proposed}", "#{APTLY_REPO_PREFIX}-#{promotion.distro}", *promotion.queries)
+    end
+    distros = promotions.map(&:distro).uniq
+    distros.each do |distro|
+      run('aptly', 'publish', 'update', "-gpg-key=#{APTLY_GPG_KEY}", distro, APTLY_ENDPOINT)
+    end
+    purge(distros.flat_map { index_urls(it) })
+    promotions.each { graduate(it) }
+    @relay.sync
+  end
+
+  private
+
+  def load(tag)
+    found = @repositories.filter_map do |repository|
+      out, status = Open3.capture2(@env, 'gh', 'release', 'view', tag, '--repo', repository, '--json', 'isDraft,isPrerelease,body', err: File::NULL)
+      [repository, JSON.parse(out)] if status.success?
+    end
+    raise "#{tag}: found on #{found.empty? ? 'none' : found.map(&:first).join(', ')} of #{@repositories.join(', ')}" unless found.size == 1
+    repository, release = found.first
+    raise "#{tag} is still a draft; run bin/publish first" if release.fetch('isDraft')
+    raise "#{tag} is not a pre-release" unless release.fetch('isPrerelease')
+
+    Dir.mktmpdir('promote') do |dir|
+      run(@env, 'gh', 'release', 'download', tag, '--repo', repository, '--pattern', '*.changes', '--dir', dir)
+      changes = Dir[File.join(dir, '*.changes')].map { parse_debian_metafile(File.read(it)) }
+      raise "#{tag}: no .changes" if changes.empty?
+      distros = changes.map { it.fetch('Distribution').first }.uniq
+      raise "#{tag}: .changes name #{distros.join(', ')}" unless distros.size == 1
+      distro = distros.first
+      suite = suite_line(release.fetch('body'))
+      raise "#{tag}: suite is #{suite.inspect}, not #{distro}-proposed" unless suite == "#{distro}-proposed"
+      Promotion.new(repository:, tag:, distro:, body: release.fetch('body'), queries: changes.flat_map { package_queries(it) }.uniq)
+    end
+  end
+
+  # One aptly query per file, so exactly the packages of this release are copied.
+  def package_queries(changes)
+    version = changes.fetch('Version').first
+    changes.fetch('Files').map { it.split.last }.filter_map do |file|
+      case file
+      when /\A([^_]+)_[^_]+\.dsc\z/
+        "Name (= #{$1}), $Version (= #{version}), $Architecture (= source)"
+      when /\A([^_]+)_[^_]+_([^_]+)\.d?deb\z/
+        "Name (= #{$1}), $Version (= #{version}), $Architecture (= #{$2})"
+      end
+    end
+  end
+
+  def graduate(promotion)
+    notes = File.join(ROOT, 'tmp', 'publish', "#{promotion.tag.tr('/', '_')}.promote-notes")
+    File.write(notes, promotion.body.sub(/^Suite: \S+$/, "Suite: #{promotion.distro}"))
+    run(@env, 'gh', 'release', 'edit', promotion.tag, '--repo', promotion.repository, '--prerelease=false', '--notes-file', notes)
+  end
+end
+
+dry_run = false
+repository = nil
+dockerfiles_dir = File.expand_path('../dockerfiles', ROOT)
+OptionParser.new do |o|
+  o.on('-n', '--dry-run', 'Only show what would be promoted') { dry_run = true }
+  o.on('--repository OWNER/REPO', 'Only this source repository, rather than every one under builds/') { repository = it }
+  o.on('--dockerfiles-dir DIR', 'Local checkout of sorah-rbpkg/dockerfiles') { dockerfiles_dir = File.expand_path(it) }
+end.parse!(ARGV)
+abort 'Usage: bin/promote [--dry-run] [--repository OWNER/REPO] [--dockerfiles-dir DIR] TAG ...' if ARGV.empty?
+
+# Shares bin/publish's lock, as both change the aptly database.
+FileUtils.mkdir_p(File.join(ROOT, 'tmp', 'publish'))
+lock = File.open(File.join(ROOT, 'tmp', 'publish', '.lock'), File::RDWR | File::CREAT)
+abort 'bin/publish or bin/promote is running' unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+
+token = github_token
+relay = DockerfilesRelay.new(dir: dockerfiles_dir, token:, dry_run:)
+repositories = repository ? [repository] : SERIES.map { it.fetch('repository') }.uniq.sort
+Promoter.new(repositories:, tags: ARGV, dry_run:, token:, relay:).run_all
