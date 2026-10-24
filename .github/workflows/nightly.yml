@@ -184,6 +184,7 @@ jobs:
           SMOKE: ${{ matrix.target.smoke }}
           SOURCE: ${{ matrix.target.source }}
           DISTRO: ${{ matrix.target.distro }}
+          SUITE: ${{ matrix.target.suite }}
           ARCH: ${{ matrix.target.arch }}
 
       # Tells roll this artifact passed.

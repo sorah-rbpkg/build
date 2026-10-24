@@ -2,7 +2,8 @@
 # Usage: bin/plan-nightly [--force] [--out DIR] [gen/builds/rubyN.M.json ...]
 #
 # Prints the nightly targets as JSON: {"targets": [...], "origs": [...]}, one target per series, distro and arch.
-# Each rubyN.M series builds the cache.ruby-lang.org snapshot of ruby_N_M, saved to DIR as its orig tarball.
+# Each rubyN.M series builds the cache.ruby-lang.org snapshot of ruby_N_M, or of master for a proposed series ahead of
+# its branch, saved to DIR as its orig tarball.
 # A series whose snapshot revision every distro of sorah-rbpkg/dockerfiles' nightly.json already has is left out
 # unless --force.
 require 'digest'
@@ -27,16 +28,24 @@ def define(header, name)
   header[/^\s*#\s*define\s+#{name}\s+(.+?)\s*$/, 1] or raise "no #{name}"
 end
 
-# <X.Y.Z>+git<YYYYMMDD>.g<hash>, or ~git while the branch is before its first release (patchlevel -1).
-def upstream_version(series_version, version_h, revision_h)
+# <X.Y.Z>+git<YYYYMMDD>.g<hash>. Before X.Y.Z is released (patchlevel -1), it follows the pre-release the packaging
+# is at, as <X.Y.Z>~preview1+git..., or sorts below any as <X.Y.Z>~git....
+def upstream_version(series_version, version_h, revision_h, packaged:)
   teeny = Integer(define(version_h, 'RUBY_VERSION_TEENY'))
   patchlevel = Integer(define(version_h, 'RUBY_PATCHLEVEL'))
   date = %w[YEAR MONTH DAY].map { Integer(define(revision_h, "RUBY_RELEASE_#{it}")) }
   revision = define(revision_h, 'RUBY_FULL_REVISION').delete('"')
   raise "unexpected revision #{revision}" unless revision.match?(/\A\h{40}\z/)
 
-  sep = patchlevel == -1 ? '~' : '+'
-  version = format('%s.%d%sgit%04d%02d%02d.g%s', series_version, teeny, sep, *date, revision[0, 10])
+  base = "#{series_version}.#{teeny}"
+  git = format('git%04d%02d%02d.g%s', *date, revision[0, 10])
+  version = if patchlevel != -1
+    "#{base}+#{git}"
+  elsif packaged.start_with?("#{base}~")
+    "#{packaged}+#{git}"
+  else
+    "#{base}~#{git}"
+  end
   [version, revision]
 end
 
@@ -57,21 +66,30 @@ def read_from_tarball(path, file)
   out
 end
 
+# The upstream version of the series commit's debian/changelog, such as 4.1.0~preview1.
+def packaged_version(series)
+  dir = fetch_master(series)
+  head = git('cat-file', 'blob', "#{series.commit}:debian/changelog", dir:).lines.first
+  head[/\A\S+ \((?:\d+:)?([^)]+)-[^-)]+\)/, 1] or raise "#{series.file}: cannot parse changelog: #{head}"
+end
+
 def plan_series(series, out:, force:, nightly:)
-  # A proposed series is a preview, which has no snapshot branch yet.
-  if series.proposed
-    warn "#{series.id}: proposed, skipping"
-    return []
-  end
   m = series.source.match(/\Aruby(\d+\.\d+)\z/) or raise "#{series.file}: #{series.source} is not a Ruby series"
   series_version = m[1]
-  branch = "ruby_#{series_version.tr('.', '_')}"
+  # A proposed series is a pre-release, whose ruby_N_M branch is not cut yet.
+  branch = series.proposed ? 'master' : "ruby_#{series_version.tr('.', '_')}"
 
   snapshot, sha256 = fetch_snapshot(branch, out:)
   version_h = read_from_tarball(snapshot, 'version.h')
   api = %w[MAJOR MINOR].map { define(read_from_tarball(snapshot, 'include/ruby/version.h'), "RUBY_API_VERSION_#{it}") }.join('.')
-  raise "#{branch} snapshot is Ruby #{api}, not #{series_version}" unless api == series_version
-  upstream_version, revision = upstream_version(series_version, version_h, read_from_tarball(snapshot, 'revision.h'))
+  unless api == series_version
+    # master moves on to the next version once N.M is released, before the series stops being proposed.
+    raise "#{branch} snapshot is Ruby #{api}, not #{series_version}" unless series.proposed
+    warn "#{series.id}: #{branch} is Ruby #{api}, skipping"
+    File.delete(snapshot)
+    return []
+  end
+  upstream_version, revision = upstream_version(series_version, version_h, read_from_tarball(snapshot, 'revision.h'), packaged: packaged_version(series))
 
   if !force && series.distros.all? { nightly.dig(series_version, it, 'revision') == revision }
     warn "#{series.id}: #{branch} is still at #{revision}, skipping"
@@ -96,6 +114,8 @@ def plan_series(series, out:, force:, nightly:)
         series: series_version,
         branch:,
         distro:,
+        # The apt suite smoke adds, for the ruby-defaults of a proposed series.
+        suite: series.proposed ? "#{distro}-proposed" : distro,
         arch:,
         # The first arch also builds the source package and arch:all packages.
         build: i.zero? ? 'full' : 'any',
