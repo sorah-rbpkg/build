@@ -58,6 +58,11 @@ def read_from_tarball(path, file)
 end
 
 def plan_series(series, out:, force:, nightly:)
+  # A proposed series is a preview, which has no snapshot branch yet.
+  if series.proposed
+    warn "#{series.id}: proposed, skipping"
+    return []
+  end
   m = series.source.match(/\Aruby(\d+\.\d+)\z/) or raise "#{series.file}: #{series.source} is not a Ruby series"
   series_version = m[1]
   branch = "ruby_#{series_version.tr('.', '_')}"
