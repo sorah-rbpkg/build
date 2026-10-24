@@ -14,8 +14,6 @@ bin/import --push 4.0.9 3.4.12
 bin/import --ahead pristine-tar=<SHA> 3.3.13  # on top of an earlier import not yet pushed
 ```
 
-`bin/import` downloads each release from ruby-lang.org and checks its sha256 against [ruby/www.ruby-lang.org](https://github.com/ruby/www.ruby-lang.org/blob/master/_data/releases.yml). It runs `gbp import-orig` onto `upstream-N.M` with a signed `upstream/<version>` tag and pristine-tar data, and merges it into `master` or `master-N.M`, whichever holds the series. It then commits the changelog entry as `releng <version>-0nkmi1` and checks the orig the build would generate with `bin/verify-orig`. Each branch it touches must match `origin`, unless `--ahead BRANCH=SHA` acknowledges that branch's unpushed commits up to exactly that commit. `bin/import --push` shows the new commits on each of those branches and `pristine-tar`, then pushes them and the tags in one atomic push once you confirm.
-
 Then point the series at the release, check the commits, and push them to `main` here, which starts the build:
 
 ```
@@ -25,7 +23,7 @@ bin/roll <full SHA>                          # a given commit
 git push
 ```
 
-`bin/roll` reads the source package from `debian/changelog` at each revision to find its series, sets `commit` in `builds/<series>.jsonnet`, and runs `bin/generate`. It checks every series with `bin/plan` before committing any, then commits each as `roll <series> <version>`. It first makes sure your checkout of sorah-rbpkg/ruby, `../ruby` by default, has pushed each branch and its `upstream/<version>` tag. Approve each distro's release job, then publish the drafts:
+Approve each distro's release job, then publish the drafts, which also updates `versions.json` of [sorah-rbpkg/dockerfiles](https://github.com/sorah-rbpkg/dockerfiles):
 
 ```
 bin/publish                                  # every draft on the repositories under builds/
@@ -36,22 +34,7 @@ bin/publish --no-publish                     # stop after re-signing
 bin/publish --relay-only                     # only update sorah-rbpkg/dockerfiles
 ```
 
-`bin/publish` takes the drafts through four steps, skipping any that is already done, so a failed run can be repeated:
-
-1. Verifies the gitsign signature of the tag against `_distro.yml` on `main`, that the tag is on the dist branch of a series building that source package, the build attestation of every asset, and the checksums in the `.changes` and `.dsc`.
-2. Re-signs the tag with `git tag -s`, and the `.changes`, `.dsc` and `.buildinfo` with `sorah-debsign`, then replaces them on the draft.
-3. Once every draft is re-signed, adds them all with `aptly repo add`, runs `aptly publish update` once per distro, purges the distros' index from cache.ruby-lang.org with `RB_PURGE_TOKEN`, and only then publishes the releases, which makes them immutable.
-4. Commits the newest released version of each series and distro to `versions.json` in your checkout of [sorah-rbpkg/dockerfiles](https://github.com/sorah-rbpkg/dockerfiles), `../dockerfiles` by default, as `roll <source> <version>`, and pushes it, which rebuilds those images. It checks before step 3 that the checkout is clean and at `origin/master`, and never moves a version back.
-
-Its GitHub token comes from `GH_TOKEN`, or from sts-cat through the `DebReleaser` role:
-
-```jsonc
-// ~/.nkmi-deb-release.json
-{
-  "stscat_url": "https://sts-cat.example.com",
-  "stscat_audience": "https://sts-cat.nkmi.me"
-}
-```
+[docs/tools.md](./docs/tools.md) describes what each of them checks and changes, and where `bin/publish` gets its token.
 
 ### Releasing ruby-defaults and rubygems-integration
 
@@ -73,26 +56,19 @@ A push builds a series only when its `commit`, `try`, `distros` or `test` change
 
 ### Test mode
 
-A series with `"test": true` runs every build in test mode, including those started by a push. Series start that way, and real releases begin with a reviewed change to `false`. Running the `build` workflow by hand with `test` checked does the same for one run.
-
-A test run goes through every job, approval included, without writing to sorah-rbpkg/ruby:
-
-- Distros are built even when already released, so a released version can serve as the test subject.
-- The release job obtains no sts-cat token. It pushes `test/<repo>/dist/N.M/<distro>` and `test/<repo>/debian/<version>_<distro>` to this repository, where `<repo>` names the source repository, and creates the draft release here. A later test run replaces them.
-- The stage branch is named `test/<repo>/dist-stage/...`.
-
-`bin/publish --test` verifies and re-signs those drafts with the token of your `gh` login, and never runs aptly or publishes. `bin/cleanup-test` deletes every `test/` release, tag and branch, so the next test run starts from scratch. It refuses while a `build` run is active; `--dry-run` lists what it would delete.
+A series with `"test": true`, or a `build` run started by hand with `test` checked, goes through every job, approval included, but releases into `test/` of this repository instead of the source repository. See [docs/test-mode.md](./docs/test-mode.md).
 
 ### Nightly packages
 
-[`nightly.yml`](./.github/workflows/nightly.yml) builds every `rubyN.M` series from the [snapshot](https://cache.ruby-lang.org/pub/ruby/snapshot/) of its `ruby_N_M` branch each Monday, on the standard runners. Nothing is tagged, released or added to the apt repository: the packages stay as artifacts of the run, `nightly-<series>-<distro>-<arch>`, for 90 days.
+[`nightly.yml`](./.github/workflows/nightly.yml) builds every `rubyN.M` series from the snapshot of its `ruby_N_M` branch each Monday, as `<X.Y.Z>+git<YYYYMMDD>.g<commit>-0nkmi0~<distro>`. The packages stay as artifacts of the run for 90 days, and those that pass smoke become the `N.M.next` images of sorah-rbpkg/dockerfiles. See [docs/nightly.md](./docs/nightly.md).
 
-- The version is `<X.Y.Z>+git<YYYYMMDD>.g<commit>-0nkmi0~<distro>`, from the snapshot's `version.h` and `revision.h`. It sorts after the release the branch is at and before the next one, and its `0nkmi0` below a release's `0nkmi1`. A branch before its first release, with patchlevel `-1`, gets `~git` instead.
-- The snapshot is the orig tarball as is, checked against the sha256 in its `snapshot-ruby_N_M.json`. Each distro builds the `debian/` of its `dist/N.M/<distro>` branch, or of the series `commit` before its first release, without the patches the snapshot already has.
-- Distros that pass smoke on every arch are rolled into [`nightly.json`](https://github.com/sorah-rbpkg/dockerfiles/blob/master/nightly.json) of sorah-rbpkg/dockerfiles, which builds the `N.M.next` images from the artifacts.
-- A series whose snapshot is still at the revision `nightly.json` has for every distro is skipped.
+## Documentation
 
-`bin/plan-nightly` shows locally what a run would build. Running `nightly` by hand takes a `series`, `force` to build an unchanged snapshot, and `roll` unchecked to leave sorah-rbpkg/dockerfiles alone.
+- [docs/architecture.md](./docs/architecture.md): what each workflow and job does, and caveats
+- [docs/tools.md](./docs/tools.md): `bin/import`, `bin/roll` and `bin/publish` in detail
+- [docs/test-mode.md](./docs/test-mode.md): test runs and cleaning up after them
+- [docs/nightly.md](./docs/nightly.md): nightly packages and their roll into sorah-rbpkg/dockerfiles
+- [docs/setup.md](./docs/setup.md): one-time setup and local tools
 
 ## Configuration
 
@@ -109,27 +85,12 @@ Each series has its own `builds/<series>.jsonnet`, which `bin/generate` renders 
   "distros": ["jammy", "noble", "resolute", "bookworm", "trixie"],
   "archs": ["amd64", "arm64"],          // the first one also builds source and arch:all packages
   "smoke": "ruby",                      // .github/scripts/smoke/<smoke>.sh
-  "test": true,                         // every run is a test run; see Test mode
+  "test": true,                         // every run is a test run; see docs/test-mode.md
   "try": 2                              // optional; bumping it rebuilds on push to main
 }
 ```
 
 `bin/plan gen/builds/ruby4.0.json` shows locally what a push would build.
-
-## How it works
-
-1. A release is prepared on `master` (or `master-N.M`) of sorah-rbpkg/ruby with `gbp import-orig` and pushed.
-2. `commit` in [`builds/<series>.jsonnet`](./builds) is pointed at that commit and pushed to `main` here.
-3. [`build.yml`](./.github/workflows/build.yml) runs [`bin/plan`](./bin/plan), which checks that the commit is signed by a key in [`keys/committers.asc`](./keys/committers.asc) and lists the distros whose `debian/<version>_<distro>` tag does not exist yet.
-4. Unless the package is native, without a Debian revision, the orig tarball is generated once per run from the commit of the signed `upstream/<version>` tag, checked against the ruby-lang.org release by [`bin/verify-orig`](./bin/verify-orig), and compared with any copy already in the apt repository, whose pool rejects a second orig with different bytes. Every distro in the run builds from that one file, and each distro's release carries it.
-5. [`_distro.yml`](./.github/workflows/_distro.yml) runs once per distro:
-   - merge: merges the commit into `dist/N.M/<distro>` and stages the result here as `dist-stage/<series>/<distro>`, where `<series>` is the name of its file under `builds/`
-   - build: runs `debuild` in the image from [`dockerfiles/Dockerfile.<distro>`](./dockerfiles), or `dockerfiles/<series>/Dockerfile.<distro>` when a series needs its own, with the package's `debian/control` as its build dependencies, on native amd64 and arm64 runners, and attests every output
-   - smoke: installs the packages on a stock image of the distro and runs [`.github/scripts/smoke/<smoke>.sh`](./.github/scripts/smoke)
-   - release: waits for approval in the `release` environment, tags `debian/<version>_<distro>` with gitsign, fast-forwards `dist/N.M/<distro>` on sorah-rbpkg/ruby, and uploads everything to a draft release there, with links to the build attestations
-6. [`bin/publish`](./bin/publish), run locally, verifies the draft, re-signs it with your GPG key, adds it to aptly and publishes the release.
-
-Distros are independent: one failing distro never blocks the release of another, and no run cancels another.
 
 ## Security model
 
@@ -138,63 +99,11 @@ Distros are independent: one failing distro never blocks the release of another,
 - The release job pushes without force, so `dist/N.M/<distro>` only ever fast-forwards, and it refuses a tag that already points elsewhere.
 - The merge commits on `dist/N.M/<distro>` and the `debian/` tags CI pushes are signed keylessly by gitsign with the identity of `_distro.yml` on `main`. `bin/publish` re-signs the tag with your GPG key but leaves the commit as is, so a released tag records who released it and the commit it points at records that CI made it. GitHub shows gitsign signatures as unverified, because the Sigstore CA is not in its trust store; check them with `gitsign verify --certificate-identity=https://github.com/sorah-rbpkg/build/.github/workflows/_distro.yml@refs/heads/main --certificate-oidc-issuer=https://token.actions.githubusercontent.com <commit>`.
 - Every built file carries a GitHub build provenance attestation. `bin/publish` checks them before it signs anything with your key, so a released tag and `.changes` carry your signature only for files CI is proven to have built.
-
-## Caveats
-
-- A distro needs a [`dockerfiles/Dockerfile.<distro>`](./dockerfiles) here before it can be added to a series. Its first release creates its dist branch at the series commit, without a merge.
-- The orig tarball is regenerated by every run, relying on `git archive` and `gzip -n` producing the same bytes. If a later git or gzip ever changes that, the run fails on the comparison with the apt repository's copy.
-- GitHub replaces `~` in release asset names with `.`; `bin/publish` restores the original names after downloading.
+- Nightly packages are never signed or released, and nobody reviews them. Their orig is the ruby-lang.org snapshot, trusted through HTTPS and the sha256 next to it, and their `debian/` comes from the released dist branches. They carry build provenance attestations from `nightly.yml`, which sorah-rbpkg/dockerfiles verifies before building `N.M.next`.
 
 ## Setup
 
-Done once for sorah-rbpkg, and kept for reference.
-
-### 1. Configure this repository
-
-Create the `release` environment with a required reviewer and the secret `STS_CAT_ENDPOINT`, and the `nightly` environment, limited to `main`, with the same secret.
-
-### 2. Allow the release and roll jobs to write sorah-rbpkg/ruby and sorah-rbpkg/dockerfiles
-
-The release job obtains its token from [sts-cat](https://github.com/sorah/sts-cat). Add an org-level trust policy:
-
-```toml
-# sorah-rbpkg/.github: .github/sts-cat/build.sts.toml
-issuer = "https://token.actions.githubusercontent.com"
-subject = "repo:sorah-rbpkg@19392696/build@1429643459:environment:release"
-repositories = ["ruby"]
-max_token_lifetime = 3600
-
-[claim_pattern]
-job_workflow_ref = "sorah-rbpkg/build/\\.github/workflows/_distro\\.yml@refs/heads/main"
-
-[permissions]
-contents = "write"
-```
-
-The roll job of `nightly.yml` pushes to sorah-rbpkg/dockerfiles through another:
-
-```toml
-# sorah-rbpkg/.github: .github/sts-cat/nightly.sts.toml
-issuer = "https://token.actions.githubusercontent.com"
-subject = "repo:sorah-rbpkg@19392696/build@1429643459:environment:nightly"
-repositories = ["dockerfiles"]
-max_token_lifetime = 3600
-
-[claim_pattern]
-job_workflow_ref = "sorah-rbpkg/build/\\.github/workflows/nightly\\.yml@refs/heads/main"
-
-[permissions]
-contents = "write"
-```
-
-### 3. Prepare the local tools
-
-```
-mise install
-hk install
-```
-
-`hk check --all` runs the same checks as CI. `bin/publish` additionally needs `gpg`, [`sorah-debsign`](https://github.com/sorah/config/blob/master/bin/sorah-debsign) on `PATH`, and an `aptly` configured with the `sorah-ruby-<distro>` repositories and the `s3:sorah-ruby:` endpoint, and a checkout of sorah-rbpkg/dockerfiles you can push to `master`, `../dockerfiles` by default.
+[docs/setup.md](./docs/setup.md) covers the environments, secrets and sts-cat trust policies, done once for sorah-rbpkg, and the local tools.
 
 ## Prior art
 
