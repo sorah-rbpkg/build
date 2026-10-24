@@ -1,6 +1,6 @@
 # Nightly packages
 
-[`nightly.yml`](../.github/workflows/nightly.yml) builds every `rubyN.M` series from the [snapshot](https://cache.ruby-lang.org/pub/ruby/snapshot/) of its `ruby_N_M` branch each Monday, on the standard runners. Nothing is tagged, released or added to the apt repository: the packages stay as artifacts of the run, `nightly-<series>-<distro>-<arch>`, for 90 days.
+[`nightly.yml`](../.github/workflows/nightly.yml) builds every `rubyN.M` series, except proposed ones, from the [snapshot](https://cache.ruby-lang.org/pub/ruby/snapshot/) of its `ruby_N_M` branch each Monday, on the standard runners. Nothing is tagged, released or added to the apt repository: the packages stay as artifacts of the run, `nightly-<series>-<distro>-<arch>`, for 90 days.
 
 - The version is `<X.Y.Z>+git<YYYYMMDD>.g<commit>-0nkmi0~<distro>`, from the snapshot's `version.h` and `revision.h`. It sorts after the release the branch is at and before the next one, and its `0nkmi0` below a release's `0nkmi1`. A branch before its first release, with patchlevel `-1`, gets `~git` instead.
 - The snapshot is the orig tarball as is, checked against the sha256 in its `snapshot-ruby_N_M.json`. Each distro builds the `debian/` of its `dist/N.M/<distro>` branch, or of the series `commit` before its first release, without the patches the snapshot already has.

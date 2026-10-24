@@ -12,6 +12,7 @@ Import the release into your checkout of sorah-rbpkg/ruby, `../ruby` by default,
 bin/import 4.0.9 3.4.12                      # one version per series
 bin/import --push 4.0.9 3.4.12
 bin/import --ahead pristine-tar=<SHA> 3.3.13  # on top of an earlier import not yet pushed
+bin/import --branch 4.1=next-4.1 4.1.0-preview2  # a series not on master or master-N.M
 ```
 
 Then point the series at the release, check the commits, and push them to `main` here, which starts the build:
@@ -45,6 +46,15 @@ bin/roll --repository sorah-rbpkg/ruby-defaults master master-3.4
 bin/roll --repository sorah-rbpkg/rubygems-integration master
 ```
 
+### Proposed packages
+
+A series with `proposed: true` publishes into `<distro>-proposed` of the apt repository, such as a preview Ruby on `next-N.M` or a rubygems-integration update that needs trying first. Its changelog still targets `unstable`. Roll and publish it as usual: its releases stay pre-releases, which sorah-rbpkg/dockerfiles ignores. Once it has been tried, copy the same packages into `<distro>`, without a rebuild:
+
+```
+bin/promote debian/1.20.1nkmi1_noble         # copies into noble, then marks the release as released
+bin/promote --dry-run debian/1.20.1nkmi1_noble
+```
+
 ### Handling failed builds
 
 - A flaky job: re-run the failed jobs of the run.
@@ -60,12 +70,12 @@ A series with `"test": true`, or a `build` run started by hand with `test` check
 
 ### Nightly packages
 
-[`nightly.yml`](./.github/workflows/nightly.yml) builds every `rubyN.M` series from the snapshot of its `ruby_N_M` branch each Monday, as `<X.Y.Z>+git<YYYYMMDD>.g<commit>-0nkmi0~<distro>`. The packages stay as artifacts of the run for 90 days, and those that pass smoke become the `N.M.next` images of sorah-rbpkg/dockerfiles. See [docs/nightly.md](./docs/nightly.md).
+[`nightly.yml`](./.github/workflows/nightly.yml) builds every `rubyN.M` series, except proposed ones, from the snapshot of its `ruby_N_M` branch each Monday, as `<X.Y.Z>+git<YYYYMMDD>.g<commit>-0nkmi0~<distro>`. The packages stay as artifacts of the run for 90 days, and those that pass smoke become the `N.M.next` images of sorah-rbpkg/dockerfiles. See [docs/nightly.md](./docs/nightly.md).
 
 ## Documentation
 
 - [docs/architecture.md](./docs/architecture.md): what each workflow and job does, and caveats
-- [docs/tools.md](./docs/tools.md): `bin/import`, `bin/roll` and `bin/publish` in detail
+- [docs/tools.md](./docs/tools.md): `bin/import`, `bin/roll`, `bin/publish` and `bin/promote` in detail
 - [docs/test-mode.md](./docs/test-mode.md): test runs and cleaning up after them
 - [docs/nightly.md](./docs/nightly.md): nightly packages and their roll into sorah-rbpkg/dockerfiles
 - [docs/setup.md](./docs/setup.md): one-time setup and local tools
@@ -85,6 +95,7 @@ Each series has its own `builds/<series>.jsonnet`, which `bin/generate` renders 
   "distros": ["jammy", "noble", "resolute", "bookworm", "trixie"],
   "archs": ["amd64", "arm64"],          // the first one also builds source and arch:all packages
   "smoke": "ruby",                      // .github/scripts/smoke/<smoke>.sh
+  "proposed": false,                    // publishes into <distro>-proposed; see Proposed packages
   "test": true,                         // every run is a test run; see docs/test-mode.md
   "try": 2                              // optional; bumping it rebuilds on push to main
 }
