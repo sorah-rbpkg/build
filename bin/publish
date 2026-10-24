@@ -18,7 +18,7 @@ end
 require 'optparse'
 require_relative '../lib/release'
 
-Release = Data.define(:repository, :prefix, :tag, :dir, :git_dir, :changes_paths, :dsc_path, :files, :source, :version, :distro) do
+Release = Data.define(:repository, :prefix, :tag, :dir, :git_dir, :changes_paths, :dsc_path, :files, :source, :version, :distro, :suite) do
   def url = "https://github.com/#{repository}.git"
   # A test release lives in this repository, under test/<repo>/ of its source repository.
   def source_repository = prefix.empty? ? repository : "#{repository.split('/').first}/#{prefix[%r{\Atest/([^/]+)/}, 1]}"
@@ -117,8 +117,8 @@ class Publisher
 
     dir = File.join(ROOT, 'tmp', 'publish', tag.tr('/', '_'))
     FileUtils.mkdir_p(dir)
-    digests = JSON.parse(capture(@env, 'gh', 'release', 'view', tag, '--repo', repository, '--json', 'assets'))
-      .fetch('assets').to_h { [it.fetch('name'), it.fetch('digest')] }
+    view = JSON.parse(capture(@env, 'gh', 'release', 'view', tag, '--repo', repository, '--json', 'assets,body'))
+    digests = view.fetch('assets').to_h { [it.fetch('name'), it.fetch('digest')] }
     # A rebuilt draft keeps the asset names, so a file is reused only if it matches the asset's digest.
     Dir.children(dir).each do |name|
       path = File.join(dir, name)
@@ -137,9 +137,12 @@ class Publisher
     raise "#{tag}: expected one .dsc, got #{dsc_paths.size}" unless dsc_paths.size == 1
 
     fields = parse_debian_metafile(File.read(changes_paths.first))
+    distro = fields.fetch('Distribution').first
+    suite = suite_line(view.fetch('body')) || distro
+    raise "#{tag}: suite #{suite} is not #{distro} or #{distro}-proposed" unless [distro, "#{distro}-proposed"].include?(suite)
     Release.new(
       repository:, prefix: tag[%r{\A(.*?)debian/}, 1], tag:, dir:, git_dir: File.join(work_dir, '.git'), changes_paths:, dsc_path: dsc_paths.first, files:,
-      source: fields.fetch('Source').first, version: fields.fetch('Version').first, distro: fields.fetch('Distribution').first,
+      source: fields.fetch('Source').first, version: fields.fetch('Version').first, distro:, suite:,
     )
   end
 
@@ -211,30 +214,31 @@ class Publisher
     run(@env, 'gh', 'release', 'upload', release.tag, '--repo', release.repository, '--clobber', *uploads)
 
     notes = File.join(release.dir, '.notes')
-    File.write(notes, release_body(changes_by_arch: release.changes_by_arch, dsc: release.dsc, attestations:, resigned_by: @fingerprint))
+    File.write(notes, release_body(changes_by_arch: release.changes_by_arch, dsc: release.dsc, suite: release.suite, attestations:, resigned_by: @fingerprint))
     run(@env, 'gh', 'release', 'edit', release.tag, '--repo', release.repository, '--notes-file', notes)
   end
 
-  # Releases leave draft only after every distro is published, as that makes them immutable.
+  # Releases leave draft only after every suite is published, as that makes their assets immutable.
+  # A proposed one stays a pre-release until bin/promote.
   def publish(releases)
     puts '=> publishing'
-    distros = releases.map(&:distro).uniq
+    suites = releases.map(&:suite).uniq
     if @dry_run
-      releases.each { puts " * would add #{it.tag} to #{APTLY_REPO_PREFIX}-#{it.distro}" }
-      distros.each { puts " * would publish #{it}" }
-      distros.flat_map { index_urls(it) }.each { puts " * would purge #{it}" }
+      releases.each { puts " * would add #{it.tag} to #{APTLY_REPO_PREFIX}-#{it.suite}" }
+      suites.each { puts " * would publish #{it}" }
+      suites.flat_map { index_urls(it) }.each { puts " * would purge #{it}" }
       releases.each { puts " * would release #{it.tag}" }
       return
     end
 
     releases.each do |release|
       check_signed(release)
-      run('aptly', 'repo', 'add', "#{APTLY_REPO_PREFIX}-#{release.distro}", *release.aptly_files)
+      run('aptly', 'repo', 'add', "#{APTLY_REPO_PREFIX}-#{release.suite}", *release.aptly_files)
     end
-    distros.each do |distro|
-      run('aptly', 'publish', 'update', "-gpg-key=#{APTLY_GPG_KEY}", distro, APTLY_ENDPOINT)
+    suites.each do |suite|
+      run('aptly', 'publish', 'update', "-gpg-key=#{APTLY_GPG_KEY}", suite, APTLY_ENDPOINT)
     end
-    purge(distros.flat_map { index_urls(it) })
+    purge(suites.flat_map { index_urls(it) })
     releases.each do |release|
       run(@env, 'gh', 'release', 'edit', release.tag, '--repo', release.repository, '--draft=false')
     end

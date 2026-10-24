@@ -24,11 +24,11 @@ DOWNLOAD_JOBS = 4
 
 def signer_workflow(name) = "#{BUILD_REPOSITORY}/.github/workflows/#{name}"
 
-def index_urls(distro)
+def index_urls(suite)
   files = %w[InRelease Release Release.gpg]
   %w[binary-amd64 binary-arm64].each { |dir| files.push(*%w[Packages Packages.gz Packages.bz2 Release].map { "main/#{dir}/#{it}" }) }
   files.push(*%w[Sources Sources.gz Sources.bz2 Release].map { "main/source/#{it}" })
-  files.map { "#{APT_URL}/dists/#{distro}/#{it}" }
+  files.map { "#{APT_URL}/dists/#{suite}/#{it}" }
 end
 
 # Leaves out the environment hash, which carries GH_TOKEN.
@@ -70,8 +70,9 @@ def parse_debian_metafile(str)
   end
 end
 
-def release_body(changes_by_arch:, dsc:, attestations: nil, resigned_by: nil)
+def release_body(changes_by_arch:, dsc:, suite: nil, attestations: nil, resigned_by: nil)
   body = []
+  body.push("Suite: #{suite}", '') if suite
   body.push(attestations, '') if attestations
   body.push('### Changes', '')
   changes_by_arch.sort.each do |arch, content|
@@ -85,6 +86,9 @@ end
 # The section draft-release.js writes, carried over when the body is rewritten.
 # Older drafts carry it at the end rather than the top.
 def attestation_section(body) = body[/^### Attestations\n.*?(?=\n\n###|\n\n<!--|\z)/m]&.rstrip
+
+# The apt suite named by draft-release.js; drafts from before it name none.
+def suite_line(body) = body[/^Suite: (\S+)$/, 1]
 
 def github_token
   return ENV['GH_TOKEN'] if ENV['GH_TOKEN']
@@ -199,15 +203,16 @@ class DockerfilesRelay
   def git(*args) = capture('git', *args, chdir: @dir)
 
   def built_pairs
-    SERIES.select { it.fetch('repository') == REPOSITORY }.flat_map do |series|
+    SERIES.select { it.fetch('repository') == REPOSITORY && !it.fetch('proposed') }.flat_map do |series|
       series.fetch('distros').map { [series.fetch('source').delete_prefix('ruby'), it] }
     end
   end
 
   # Keyed by [series, distro], from the debian/<version>_<distro> tags of published releases.
+  # A pre-release is in a -proposed suite, which the images do not install from.
   def released_versions
-    tags = JSON.parse(capture(@env, 'gh', 'release', 'list', '--repo', REPOSITORY, '--limit', '1000', '--json', 'tagName,isDraft'))
-      .reject { it.fetch('isDraft') }.map { it.fetch('tagName') }.grep(%r{\Adebian/})
+    tags = JSON.parse(capture(@env, 'gh', 'release', 'list', '--repo', REPOSITORY, '--limit', '1000', '--json', 'tagName,isDraft,isPrerelease'))
+      .reject { it.fetch('isDraft') || it.fetch('isPrerelease') }.map { it.fetch('tagName') }.grep(%r{\Adebian/})
     versions = tags.map { it.delete_prefix('debian/').gsub('.#', '.').tr('_%', '~:') }
     pairs = versions.filter_map do |version|
       series = version[/\A(\d+\.\d+)\./, 1]
