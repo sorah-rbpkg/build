@@ -59,6 +59,10 @@ class Publisher
     drafts.sort!
     puts 'Drafts:', *drafts.map { |repository, tag| "  #{repository} #{tag}" }
 
+    # Before the downloads, which share one work directory per repository.
+    drafts.map(&:first).uniq.each do |repository|
+      run('git', 'init', '-q', work_dir(repository)) unless File.directory?(work_dir(repository))
+    end
     releases = {}
     each_parallel(drafts, DOWNLOAD_JOBS) { |repository, tag| releases[[repository, tag]] = download(repository, tag) }
     releases = drafts.map { releases.fetch(it) }
@@ -110,10 +114,10 @@ class Publisher
     false
   end
 
+  # gitsign cannot resolve tags in a bare repository.
+  def work_dir(repository) = File.join(ROOT, 'tmp', 'publish', repository.tr('/', '_'))
+
   def download(repository, tag)
-    # gitsign cannot resolve tags in a bare repository.
-    work_dir = File.join(ROOT, 'tmp', 'publish', repository.tr('/', '_'))
-    run('git', 'init', '-q', work_dir) unless File.directory?(work_dir)
 
     dir = File.join(ROOT, 'tmp', 'publish', tag.tr('/', '_'))
     FileUtils.mkdir_p(dir)
@@ -141,7 +145,7 @@ class Publisher
     suite = suite_line(view.fetch('body')) || distro
     raise "#{tag}: suite #{suite} is not #{distro} or #{distro}-proposed" unless [distro, "#{distro}-proposed"].include?(suite)
     Release.new(
-      repository:, prefix: tag[%r{\A(.*?)debian/}, 1], tag:, dir:, git_dir: File.join(work_dir, '.git'), changes_paths:, dsc_path: dsc_paths.first, files:,
+      repository:, prefix: tag[%r{\A(.*?)debian/}, 1], tag:, dir:, git_dir: File.join(work_dir(repository), '.git'), changes_paths:, dsc_path: dsc_paths.first, files:,
       source: fields.fetch('Source').first, version: fields.fetch('Version').first, distro:, suite:,
     )
   end
