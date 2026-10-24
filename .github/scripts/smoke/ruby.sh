@@ -23,6 +23,10 @@ apt-get install -y "${debs[@]}" "${defaults[@]}"
 
 "ruby${sfx}" -v
 "ruby${sfx}" --enable=yjit --yjit-stats -e0
+# Built with ZJIT from 4.1.
+if "ruby${sfx}" -e 'exit defined?(RubyVM::ZJIT) ? 0 : 1'; then
+  "ruby${sfx}" --zjit --zjit-stats -e0
+fi
 "gem${sfx}" install aws-sdk-s3 rexml
 "ruby${sfx}" -raws-sdk-s3 -e 'p Aws::S3::Client'
 "ruby${sfx}" -rnet/http -e0
