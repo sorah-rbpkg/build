@@ -15,6 +15,7 @@
    ],
    "large_runner": false,
    "master": "master-3.3",
+   "proposed": false,
    "repository": "sorah-rbpkg/ruby-defaults",
    "smoke": "ruby-defaults",
    "source": "ruby-defaults",

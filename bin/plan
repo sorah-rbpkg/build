@@ -41,9 +41,11 @@ def plan_series(series, distro_filter:, test:)
   verify_signature('commit', series.commit, dir:)
 
   head = git('cat-file', 'blob', "#{series.commit}:debian/changelog", dir:).lines.first
-  m = head.match(/\A(?<source>\S+) \((?<version>[^)]+)\)/) or raise "#{series.file}: cannot parse changelog: #{head}"
+  m = head.match(/\A(?<source>\S+) \((?<version>[^)]+)\) (?<distribution>[^;]+);/) or raise "#{series.file}: cannot parse changelog: #{head}"
   raise "#{series.file}: changelog source is #{m[:source]}, not #{series.source}" unless m[:source] == series.source
   raise "#{series.file}: changelog version #{m[:version]} has no ~dist" unless m[:version].include?('~dist')
+  # The suite comes from the series, so a proposed release can later be promoted as it is.
+  raise "#{series.file}: changelog distribution is #{m[:distribution]}, not unstable" unless m[:distribution] == 'unstable'
 
   # A version without a Debian revision is a native package, which has no orig tarball.
   if m[:version].sub(/\A\d+:/, '').include?('-')
@@ -82,6 +84,7 @@ def plan_series(series, distro_filter:, test:)
       master: series.master,
       commit: series.commit,
       distro:,
+      suite: series.proposed ? "#{distro}-proposed" : distro,
       dist_branch:,
       # The first release of a distro creates its dist branch at the series commit.
       new_dist: !existing_dists.include?(dist_branch),

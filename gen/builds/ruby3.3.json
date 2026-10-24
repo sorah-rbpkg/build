@@ -15,6 +15,7 @@
    ],
    "large_runner": true,
    "master": "master-3.3",
+   "proposed": false,
    "repository": "sorah-rbpkg/ruby",
    "smoke": "ruby",
    "source": "ruby3.3",

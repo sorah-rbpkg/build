@@ -1,4 +1,4 @@
-local series(source, repository, master, commit, dist, distros, archs, smoke, large_runner, test, try) = {
+local series(source, repository, master, commit, dist, distros, archs, smoke, large_runner, proposed, test, try) = {
   source: source,
   repository: repository,
   master: master,
@@ -10,6 +10,8 @@ local series(source, repository, master, commit, dist, distros, archs, smoke, la
   // .github/scripts/smoke/<smoke>.sh
   smoke: smoke,
   large_runner: large_runner,
+  // Releases into <distro>-proposed of the apt repository, as pre-releases until bin/promote.
+  proposed: proposed,
   // Every run of a test series releases into test/ of this repository, never the source repository.
   test: test,
 } + (
@@ -18,7 +20,7 @@ local series(source, repository, master, commit, dist, distros, archs, smoke, la
 );
 
 {
-  ruby(version, commit, distros, master=null, test=true, try=null)::
+  ruby(version, commit, distros, master=null, proposed=false, test=true, try=null)::
     series(
       source='ruby%s' % version,
       repository='sorah-rbpkg/ruby',
@@ -30,12 +32,13 @@ local series(source, repository, master, commit, dist, distros, archs, smoke, la
       smoke='ruby',
       // Ruby's test suite needs the org's large runners; other packages build on standard ones.
       large_runner=true,
+      proposed=proposed,
       test=test,
       try=try,
     ),
 
   // One series per default Ruby, each on its own branch.
-  rubyDefaults(version, commit, distros, master=null, test=true, try=null)::
+  rubyDefaults(version, commit, distros, master=null, proposed=false, test=true, try=null)::
     series(
       source='ruby-defaults',
       repository='sorah-rbpkg/ruby-defaults',
@@ -46,15 +49,16 @@ local series(source, repository, master, commit, dist, distros, archs, smoke, la
       archs=['amd64', 'arm64'],
       smoke='ruby-defaults',
       large_runner=false,
+      proposed=proposed,
       test=test,
       try=try,
     ),
 
-  rubygemsIntegration(commit, distros, test=true, try=null)::
+  rubygemsIntegration(commit, distros, master='master', proposed=false, test=true, try=null)::
     series(
       source='rubygems-integration',
       repository='sorah-rbpkg/rubygems-integration',
-      master='master',
+      master=master,
       commit=commit,
       dist='dist',
       distros=distros,
@@ -62,6 +66,7 @@ local series(source, repository, master, commit, dist, distros, archs, smoke, la
       archs=['amd64'],
       smoke='rubygems-integration',
       large_runner=false,
+      proposed=proposed,
       test=test,
       try=try,
     ),

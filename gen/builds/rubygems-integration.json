@@ -13,6 +13,7 @@
    ],
    "large_runner": false,
    "master": "master",
+   "proposed": false,
    "repository": "sorah-rbpkg/rubygems-integration",
    "smoke": "rubygems-integration",
    "source": "rubygems-integration",
