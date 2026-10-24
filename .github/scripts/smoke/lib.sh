@@ -1,6 +1,6 @@
 #!/bin/bash
 # Sourced by each smoke script, inside a stock image of DISTRO. Adds the published apt repository.
-: "${DISTRO:?}" "${ARCH:?}"
+: "${DISTRO:?}" "${SUITE:?}" "${ARCH:?}"
 export DEBIAN_FRONTEND=noninteractive
 
 # Same as dockerfiles/Dockerfile.bullseye: deb.debian.org's bullseye-security pool misses files its index lists.
@@ -16,8 +16,10 @@ fi
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates
 install -D -m0644 /keys/sorah-ruby.gpg /usr/local/share/keyrings/sorah-ruby.gpg
-echo "deb [signed-by=/usr/local/share/keyrings/sorah-ruby.gpg] https://cache.ruby-lang.org/lab/sorah/deb/ ${DISTRO} main" \
-  > /etc/apt/sources.list.d/sorah-ruby.list
+# A proposed package may depend on others only in its suite, such as a ruby-defaults on its rubyN.M.
+for suite in $(printf '%s\n' "$DISTRO" "$SUITE" | uniq); do
+  echo "deb [signed-by=/usr/local/share/keyrings/sorah-ruby.gpg] https://cache.ruby-lang.org/lab/sorah/deb/ ${suite} main"
+done > /etc/apt/sources.list.d/sorah-ruby.list
 apt-get update
 
 # Prints the built packages for ARCH, without debug symbols.

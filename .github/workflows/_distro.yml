@@ -151,6 +151,7 @@ jobs:
           SMOKE: ${{ fromJSON(inputs.target).smoke }}
           SOURCE: ${{ fromJSON(inputs.target).source }}
           DISTRO: ${{ fromJSON(inputs.target).distro }}
+          SUITE: ${{ fromJSON(inputs.target).suite }}
           ARCH: ${{ matrix.arch }}
 
   # A failed smoke leaves the release to the approver, so the built artifacts are not thrown away.
