@@ -1,6 +1,6 @@
 #!/bin/bash
 # Assembles the source tree of a nightly from the snapshot orig and the packaging's debian/, as SOURCE_TAR for debuild.sh.
-# Drops the patches the snapshot already has, and prepends a changelog entry of CHANGELOG_VERSION.
+# Drops the patches the snapshot already has, prepends a changelog entry of CHANGELOG_VERSION, and lets the symbols differ.
 set -euxo pipefail
 : "${SOURCE:?}" "${ORIG_NAME:?}" "${CHANGELOG_VERSION:?}" "${BRANCH:?}" "${REVISION:?}" "${SOURCE_TAR:?}"
 
@@ -45,5 +45,8 @@ maintainer="$(sed -n -e 's/^ -- \(.*>\)  .*$/\1/p' "$changelog" | head -n1)"
 } > "${work}/changelog"
 mv "${work}/changelog" "$changelog"
 head -n 6 "$changelog"
+
+# A snapshot adds and drops symbols against the release's symbols file; dpkg-gensymbols still logs the diff.
+sed -i '1a export DPKG_GENSYMBOLS_CHECK_LEVEL = 0' "${tree}/debian/rules"
 
 tar -C "$work" -cf "$SOURCE_TAR" "$SOURCE"
