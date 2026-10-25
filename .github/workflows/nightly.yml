@@ -95,6 +95,15 @@ jobs:
           ref: ${{ matrix.target.packaging_commit }}
           path: src
           sparse-checkout: debian
+          # Full history, for the merge below.
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: merge the series branch
+        working-directory: src
+        run: git -c user.name=nightly -c user.email=nightly@invalid merge --no-edit "$PACKAGING_MERGE"
+        env:
+          PACKAGING_MERGE: ${{ matrix.target.packaging_merge }}
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

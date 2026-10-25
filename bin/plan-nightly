@@ -66,10 +66,17 @@ def read_from_tarball(path, file)
   out
 end
 
-# The upstream version of the series commit's debian/changelog, such as 4.1.0~preview1.
-def packaged_version(series)
+# The signed head of the series' packaging branch, which each distro merges before building.
+def packaging_head(series)
   dir = fetch_master(series)
-  head = git('cat-file', 'blob', "#{series.commit}:debian/changelog", dir:).lines.first
+  commit = git('rev-parse', "refs/remotes/origin/#{series.master}", dir:).strip
+  verify_signature('commit', commit, dir:)
+  commit
+end
+
+# The upstream version of the commit's debian/changelog, such as 4.1.0~preview1.
+def packaged_version(series, commit)
+  head = git('cat-file', 'blob', "#{commit}:debian/changelog", dir: fetch_master(series)).lines.first
   head[/\A\S+ \((?:\d+:)?([^)]+)-[^-)]+\)/, 1] or raise "#{series.file}: cannot parse changelog: #{head}"
 end
 
@@ -89,7 +96,8 @@ def plan_series(series, out:, force:, nightly:)
     File.delete(snapshot)
     return []
   end
-  upstream_version, revision = upstream_version(series_version, version_h, read_from_tarball(snapshot, 'revision.h'), packaged: packaged_version(series))
+  packaging_merge = packaging_head(series)
+  upstream_version, revision = upstream_version(series_version, version_h, read_from_tarball(snapshot, 'revision.h'), packaged: packaged_version(series, packaging_merge))
 
   if !force && series.distros.all? { nightly.dig(series_version, it, 'revision') == revision }
     warn "#{series.id}: #{branch} is still at #{revision}, skipping"
@@ -100,7 +108,8 @@ def plan_series(series, out:, force:, nightly:)
   orig_name = "#{series.source}_#{upstream_version}.orig.tar.gz"
   File.rename(snapshot, File.join(out, orig_name))
 
-  # Each distro builds the packaging of its last release, which may carry changes for that distro alone.
+  # Each distro builds the packaging of its last release, which may carry changes for that distro alone, merged with
+  # the series branch for packaging made since.
   dist_heads = git('ls-remote', '--heads', series.url, "refs/heads/#{series.dist}/*")
     .lines(chomp: true).to_h { it.split("\t", 2).reverse }
 
@@ -121,6 +130,7 @@ def plan_series(series, out:, force:, nightly:)
         build: i.zero? ? 'full' : 'any',
         runner: runner_for(arch, large: false),
         packaging_commit:,
+        packaging_merge:,
         upstream_version:,
         revision:,
         changelog_version: "#{upstream_version}-#{DEBIAN_REVISION}~dist",
