@@ -3,7 +3,7 @@
       "amd64",
       "arm64"
    ],
-   "commit": "318da01fdd73f5fc05ca7a18c860d9fb52b55ddb",
+   "commit": "1a05c26b260716d3a74c095b1733a83180f5495d",
    "dist": "dist/4.1",
    "distros": [
       "noble",
