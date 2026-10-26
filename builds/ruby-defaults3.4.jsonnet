@@ -2,6 +2,6 @@ local series = import 'series.libsonnet';
 
 series.rubyDefaults(
   '3.4',
-  commit='d4a6e827fc82402bb38386f8f066b4d97e833e7a',
+  commit='2a396637660a4d19eb02702c5780035cb3ecb286',
   distros=['jammy', 'noble', 'resolute', 'bookworm', 'trixie'],
 )
