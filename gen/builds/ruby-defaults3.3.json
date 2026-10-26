@@ -3,7 +3,7 @@
       "amd64",
       "arm64"
    ],
-   "commit": "97625eed944432ec119c019d0bd54dbe337f94dc",
+   "commit": "fb0f35e77834d78d735f15ae1033c61ff8111333",
    "dist": "dist/3.3",
    "distros": [
       "focal",
