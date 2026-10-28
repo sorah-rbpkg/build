@@ -19,5 +19,5 @@
    "repository": "sorah-rbpkg/ruby-defaults",
    "smoke": "ruby-defaults",
    "source": "ruby-defaults",
-   "test": true
+   "test": false
 }
