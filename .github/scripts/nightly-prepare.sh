@@ -13,14 +13,30 @@ tar -C "$check" --strip-components=1 -xzf "${GITHUB_WORKSPACE}/orig/${ORIG_NAME}
 cp -a "${GITHUB_WORKSPACE}/src/debian" "${tree}/"
 
 # Patches are tried in order on a scratch copy, as each may depend on the ones before it.
+# dpkg-source allows no fuzz, so a patch that needs some is rewritten from the scratch copy's diff.
 series="${tree}/debian/patches/series"
 if [[ -f "$series" ]]; then
+  scratch_git() { git -C "$check" -c user.name=nightly -c user.email=nightly@localhost "$@"; }
+  scratch_git init -q
+  scratch_git add -A -f
+  scratch_git commit -q -m orig
   kept=()
   while read -r patch _; do
     [[ -z "$patch" || "$patch" == \#* ]] && continue
     file="${tree}/debian/patches/${patch}"
-    if patch -d "$check" -p1 -s -f --dry-run < "$file" > /dev/null; then
-      patch -d "$check" -p1 -s -f < "$file"
+    if patch -d "$check" -p1 -s -f -F 0 --dry-run < "$file" > /dev/null; then
+      patch -d "$check" -p1 -s -f -F 0 --no-backup-if-mismatch < "$file"
+      scratch_git add -A -f
+      scratch_git commit -q -m "$patch"
+      kept+=("$patch")
+    elif patch -d "$check" -p1 -s -f --dry-run < "$file" > /dev/null; then
+      patch -d "$check" -p1 -s -f --no-backup-if-mismatch < "$file"
+      scratch_git add -A -f
+      sed -e '/^\(diff \|--- \)/,$d' "$file" > "${work}/refreshed.patch"
+      scratch_git diff --cached --no-ext-diff >> "${work}/refreshed.patch"
+      mv "${work}/refreshed.patch" "$file"
+      scratch_git commit -q -m "$patch"
+      echo "::notice title=${SOURCE} ${patch}::needs fuzz on ${BRANCH}; refreshed"
       kept+=("$patch")
     elif patch -d "$check" -p1 -s -f -R --dry-run < "$file" > /dev/null; then
       echo "::notice title=${SOURCE} ${patch}::already in ${BRANCH}; dropped"
