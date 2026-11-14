@@ -14,7 +14,7 @@ The scripts under [`bin/`](../bin) that take a release from ruby-lang.org to the
 
 `bin/publish` takes the drafts through four steps, skipping any that is already done, so a failed run can be repeated:
 
-1. Verifies the gitsign signature of the tag against `_distro.yml` on `main`, that the tag is on the dist branch of a series building that source package, the build attestation of every asset, and the checksums in the `.changes` and `.dsc`.
+1. Verifies the gitsign signature of the tag against `_distro.yml` on `main`, that the tag is on the dist branch of a series building that source package, the build attestation of every asset, and the checksums in the `.changes` and `.dsc`. Every draft is verified, the signatures and attestations of all of them in parallel, before any is re-signed.
 2. Re-signs the tag with `git tag -s`, and the `.changes`, `.dsc` and `.buildinfo` with `sorah-debsign`, then replaces them on the draft.
 3. Once every draft is re-signed, adds them all with `aptly repo add`, runs `aptly publish update` once per suite, purges the distros' index from cache.ruby-lang.org with `RB_PURGE_TOKEN`, and only then publishes the releases, which makes them immutable.
 4. Commits the newest released version of each series and distro to `versions.json` in your checkout of [sorah-rbpkg/dockerfiles](https://github.com/sorah-rbpkg/dockerfiles), `../dockerfiles` by default, as `roll <source> <version>`, and pushes it, which rebuilds those images. It checks before step 3 that the checkout is clean and at `origin/master`, and never moves a version back.

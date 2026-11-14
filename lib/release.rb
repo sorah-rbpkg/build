@@ -17,8 +17,8 @@ APT_URL = 'https://cache.ruby-lang.org/lab/sorah/deb'
 STSCAT_CONFIG = File.expand_path('~/.nkmi-deb-release.json')
 # Must stay in sync with .github/scripts/draft-release.js.
 RESIGNED_MARKER = '<!-- resigned-by:'
-# gh attestation verify takes a few seconds per file, mostly waiting on the network.
-ATTESTATION_JOBS = 8
+# gh attestation verify and gitsign verify-tag take a few seconds each, mostly waiting on the network.
+VERIFY_JOBS = 16
 # gh release download already fetches the assets of one release in parallel.
 DOWNLOAD_JOBS = 4
 

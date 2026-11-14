@@ -66,39 +66,35 @@ class Publisher
     releases = {}
     each_parallel(drafts, DOWNLOAD_JOBS) { |repository, tag| releases[[repository, tag]] = download(repository, tag) }
     releases = drafts.map { releases.fetch(it) }
-    releases.each { process(it) }
+    views = {}
+    each_parallel(releases, DOWNLOAD_JOBS) { views[it] = view(it) }
+    verify_all(releases.reject { resigned?(views.fetch(it)) || signed?(it, views.fetch(it)) })
+    releases.each { process(it, views.fetch(it)) }
     return unless @publish
 
     publish(releases)
     @relay.sync
   end
 
-  def process(release)
-    tag = release.tag
-    puts "=> #{tag}"
-    draft = view(release)
-
-    if draft.fetch('body').include?("#{RESIGNED_MARKER} #{@fingerprint}")
+  def process(release, draft)
+    puts "=> #{release.tag}"
+    if resigned?(draft)
       puts ' * already re-signed, skipping verification'
     elsif @dry_run
-      if signed?(release, draft)
-        puts ' * would resume an interrupted re-sign'
-      else
-        verify(release)
-        puts ' * would re-sign'
-      end
+      puts(signed?(release, draft) ? ' * would resume an interrupted re-sign' : ' * would re-sign')
       puts ' * would push the re-signed tag and files'
     else
       if signed?(release, draft)
         puts ' * resuming an interrupted re-sign'
         FileUtils.cp(Dir[File.join(signed_dir(release), '*')], release.dir)
       else
-        verify(release)
         sign(release, draft)
       end
       push_signed(release)
     end
   end
+
+  def resigned?(draft) = draft.fetch('body').include?("#{RESIGNED_MARKER} #{@fingerprint}")
 
   def view(release)
     JSON.parse(capture(@env, 'gh', 'release', 'view', release.tag, '--repo', release.repository, '--json', 'id,isDraft,body'))
@@ -150,30 +146,59 @@ class Publisher
     )
   end
 
-  def verify(release)
-    puts ' * verifying what CI produced'
-    git = ['git', '--git-dir', release.git_dir]
-    dists = capture('git', 'ls-remote', '--heads', release.url, *release.dist_branches.map { "refs/heads/#{it}" })
-      .lines(chomp: true).map { it.split("\t", 2).fetch(1).delete_prefix('refs/heads/') }
-    raise "#{release.tag}: none of #{release.dist_branches.join(', ')} exists on #{release.repository}" if dists.empty?
-    run(*git, 'fetch', '-q', '--filter=blob:none', '--no-tags', '--force', release.url,
-      "refs/tags/#{release.tag}:refs/tags/#{release.tag}", *dists.map { "refs/heads/#{it}:refs/remotes/origin/#{it}" })
-    run('gitsign', 'verify-tag',
+  # Every draft is verified before any is signed, so a bad one stops the run with nothing signed.
+  def verify_all(releases)
+    return if releases.empty?
+
+    puts "=> verifying what CI produced for #{releases.size} drafts"
+    dists = fetch_for_verify(releases)
+    # gh attestation verify otherwise refreshes the root through TUF on each call, which is most of its time.
+    trusted_root = File.join(ROOT, 'tmp', 'publish', '.trusted-root.jsonl')
+    File.write(trusted_root, capture(@env, 'gh', 'attestation', 'trusted-root'))
+    checks = releases.flat_map { |release| [[release, nil], *release.files.map { [release, it] }] }
+    each_parallel(checks, VERIFY_JOBS) do |release, file|
+      file ? verify_attestation(file, trusted_root:) : verify_tag(release, dists.fetch(release))
+    end
+    releases.each { verify_checksums(it) }
+  end
+
+  # One fetch per repository, as concurrent fetches into its work directory race on FETCH_HEAD.
+  def fetch_for_verify(releases)
+    releases.group_by(&:repository).flat_map do |_repository, group|
+      first = group.first
+      dists = capture('git', 'ls-remote', '--heads', first.url, *group.flat_map(&:dist_branches).uniq.map { "refs/heads/#{it}" })
+        .lines(chomp: true).map { it.split("\t", 2).fetch(1).delete_prefix('refs/heads/') }
+      run('git', '--git-dir', first.git_dir, 'fetch', '-q', '--filter=blob:none', '--no-tags', '--force', first.url,
+        *group.map { "refs/tags/#{it.tag}:refs/tags/#{it.tag}" }, *dists.map { "refs/heads/#{it}:refs/remotes/origin/#{it}" })
+      group.map do |release|
+        on_remote = release.dist_branches & dists
+        raise "#{release.tag}: none of #{release.dist_branches.join(', ')} exists on #{release.repository}" if on_remote.empty?
+        [release, on_remote]
+      end
+    end.to_h
+  end
+
+  def verify_tag(release, dists)
+    out, status = Open3.capture2e('gitsign', 'verify-tag',
       "--certificate-identity=https://github.com/#{signer_workflow('_distro.yml')}@refs/heads/main",
       "--certificate-oidc-issuer=#{OIDC_ISSUER}", release.tag, chdir: File.dirname(release.git_dir))
+    raise "#{release.tag}: gitsign verify-tag failed:\n#{out}" unless status.success?
     on_dist = dists.any? do |dist|
-      system(*git, 'merge-base', '--is-ancestor', "#{release.tag}^{commit}", "refs/remotes/origin/#{dist}")
+      system('git', '--git-dir', release.git_dir, 'merge-base', '--is-ancestor', "#{release.tag}^{commit}", "refs/remotes/origin/#{dist}")
     end
     raise "#{release.tag} is on none of #{dists.join(', ')}" unless on_dist
+    puts "  signed: #{release.tag}"
+  end
 
-    each_parallel(release.files, ATTESTATION_JOBS) do |file|
-      workflow = file.end_with?('.orig.tar.gz') ? 'build.yml' : '_distro.yml'
-      ok = system(@env, 'gh', 'attestation', 'verify', file, '--repo', BUILD_REPOSITORY,
-        '--signer-workflow', signer_workflow(workflow), '--source-ref', 'refs/heads/main', out: File::NULL)
-      raise "#{File.basename(file)}: attestation verification failed" unless ok
-      puts "  attested: #{File.basename(file)}"
-    end
+  def verify_attestation(file, trusted_root:)
+    workflow = file.end_with?('.orig.tar.gz') ? 'build.yml' : '_distro.yml'
+    ok = system(@env, 'gh', 'attestation', 'verify', file, '--repo', BUILD_REPOSITORY, '--custom-trusted-root', trusted_root,
+      '--signer-workflow', signer_workflow(workflow), '--source-ref', 'refs/heads/main', out: File::NULL)
+    raise "#{File.basename(file)}: attestation verification failed" unless ok
+    puts "  attested: #{File.basename(file)}"
+  end
 
+  def verify_checksums(release)
     [*release.changes_paths, release.dsc_path].each do |meta|
       parse_debian_metafile(File.read(meta)).fetch('Checksums-Sha256').each do |line|
         sha256, _size, name = line.split
