@@ -30,7 +30,7 @@ The commit is made through the GitHub API with a token from sts-cat, so GitHub s
 
 ## Failures
 
-- A patch that neither applies nor is already in the snapshot fails that distro's build. Fix it on the series' `master` branch, and run `nightly` by hand with `force` to pick it up before the snapshot moves.
+- A patch that neither applies nor is already in the snapshot fails that distro's build. Fix it on the series' `master` branch, and run `nightly` by hand with `force` to pick it up before the snapshot moves. A patch the last release still needs but the snapshot supersedes in another form stays on the branch and goes into `nightly_drop` of the series under `builds/`, which nightly drops before applying the rest; remove the entry once the patch leaves the branch.
 - A `dist/N.M/<distro>` branch whose own `debian/` changes conflict with the series' `master` branch fails that distro's build at the merge.
 - A distro that fails to build or smoke on any arch keeps last week's entry in `nightly.json`, and its images stay as they were.
 - The artifacts expire after 90 days. A series whose branch does not move for that long is skipped every week, and its images fail to rebuild once they expire; run `nightly` by hand with `force` to renew them.

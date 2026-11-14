@@ -12,6 +12,9 @@
    ],
    "large_runner": true,
    "master": "next-4.1",
+   "nightly_drop": [
+      "test_gem_credential_store_-run-fake-backends-with-Gem.rub.patch"
+   ],
    "proposed": true,
    "repository": "sorah-rbpkg/ruby",
    "smoke": "ruby",

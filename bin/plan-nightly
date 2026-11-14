@@ -131,6 +131,7 @@ def plan_series(series, out:, force:, nightly:)
         runner: runner_for(arch, large: false),
         packaging_commit:,
         packaging_merge:,
+        drop_patches: series.nightly_drop.join(' '),
         upstream_version:,
         revision:,
         changelog_version: "#{upstream_version}-#{DEBIAN_REVISION}~dist",

@@ -9,7 +9,7 @@ COMMITTERS_KEYRING = File.join(ROOT, 'keys', 'committers.asc')
 # Any other distro is taken to be an Ubuntu release.
 DEBIAN_CODENAMES = %w[stretch buster bullseye bookworm trixie forky duke]
 
-Series = Data.define(:file, :source, :repository, :master, :commit, :dist, :distros, :archs, :smoke, :large_runner, :proposed, :test) do
+Series = Data.define(:file, :source, :repository, :master, :commit, :dist, :distros, :archs, :smoke, :large_runner, :proposed, :test, :nightly_drop) do
   def self.load(path)
     config = JSON.parse(File.read(path))
     new(
@@ -25,6 +25,7 @@ Series = Data.define(:file, :source, :repository, :master, :commit, :dist, :dist
       large_runner: config.fetch('large_runner'),
       proposed: config.fetch('proposed'),
       test: config.fetch('test'),
+      nightly_drop: config.fetch('nightly_drop', []),
     )
   end
 

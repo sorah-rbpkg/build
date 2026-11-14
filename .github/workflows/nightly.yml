@@ -125,6 +125,7 @@ jobs:
           CHANGELOG_VERSION: ${{ matrix.target.changelog_version }}
           BRANCH: ${{ matrix.target.branch }}
           REVISION: ${{ matrix.target.revision }}
+          DROP_PATCHES: ${{ matrix.target.drop_patches }}
           SOURCE_TAR: ${{ runner.temp }}/nightly-source.tar
 
       - name: debuild

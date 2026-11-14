@@ -1,6 +1,6 @@
 #!/bin/bash
 # Assembles the source tree of a nightly from the snapshot orig and the packaging's debian/, as SOURCE_TAR for debuild.sh.
-# Drops the patches the snapshot already has, prepends a changelog entry of CHANGELOG_VERSION, and lets the symbols differ.
+# Drops the patches the snapshot already has or DROP_PATCHES names, prepends a changelog entry of CHANGELOG_VERSION, and lets the symbols differ.
 set -euxo pipefail
 : "${SOURCE:?}" "${ORIG_NAME:?}" "${CHANGELOG_VERSION:?}" "${BRANCH:?}" "${REVISION:?}" "${SOURCE_TAR:?}"
 
@@ -20,9 +20,17 @@ if [[ -f "$series" ]]; then
   scratch_git init -q
   scratch_git add -A -f
   scratch_git commit -q -m orig
+  for patch in ${DROP_PATCHES:-}; do
+    awk -v p="$patch" '$1 == p { found = 1 } END { exit !found }' "$series" ||
+      echo "::warning title=${SOURCE} ${patch}::in nightly_drop but not in debian/patches/series"
+  done
   kept=()
   while read -r patch _; do
     [[ -z "$patch" || "$patch" == \#* ]] && continue
+    if [[ " ${DROP_PATCHES:-} " == *" ${patch} "* ]]; then
+      echo "::notice title=${SOURCE} ${patch}::in nightly_drop; dropped"
+      continue
+    fi
     file="${tree}/debian/patches/${patch}"
     if patch -d "$check" -p1 -s -f -F 0 --dry-run < "$file" > /dev/null; then
       patch -d "$check" -p1 -s -f -F 0 --no-backup-if-mismatch < "$file"
