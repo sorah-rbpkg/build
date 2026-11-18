@@ -19,5 +19,5 @@
    "smoke": "ruby",
    "source": "ruby4.0",
    "test": false,
-   "try": 3
+   "try": 4
 }
