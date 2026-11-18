@@ -1,11 +1,14 @@
 #!/usr/bin/env ruby
-# Usage: bin/verify-orig ORIG_TARBALL UPSTREAM_VERSION
+# Usage: bin/verify-orig [--upstream TARBALL] ORIG_TARBALL UPSTREAM_VERSION
 #
 # Checks that an orig tarball holds the same files as the ruby-lang.org release of UPSTREAM_VERSION.
+#
+# --upstream compares against a release tarball the caller has already checked, such as one not announced yet.
 require 'date'
 require 'digest'
 require 'find'
 require 'net/http'
+require 'optparse'
 require 'tmpdir'
 require 'yaml'
 
@@ -37,20 +40,27 @@ def manifest(tarball, dir)
   end.sort
 end
 
+upstream = nil
+OptionParser.new do |o|
+  o.on('--upstream TARBALL', 'Release tarball already checked against its sha256') { upstream = File.expand_path(it) }
+end.parse!(ARGV)
 orig, upstream_version = ARGV
-abort 'Usage: bin/verify-orig ORIG_TARBALL UPSTREAM_VERSION' unless orig && upstream_version
-
-version = upstream_version.tr('~', '-')
-release = YAML.safe_load(fetch(RELEASES_URL), permitted_classes: [Date]).find { it.fetch('version') == version }
-abort "ruby #{version} is not in #{RELEASES_URL}" unless release
-url = release.fetch('url').fetch('gz')
-sha256 = release.fetch('sha256').fetch('gz')
+abort 'Usage: bin/verify-orig [--upstream TARBALL] ORIG_TARBALL UPSTREAM_VERSION' unless orig && upstream_version
 
 Dir.mktmpdir('verify-orig') do |tmp|
-  upstream = File.join(tmp, File.basename(url))
-  File.binwrite(upstream, fetch(url))
-  actual = Digest::SHA256.file(upstream).hexdigest
-  abort "#{url}: sha256 is #{actual}, not #{sha256}" unless actual == sha256
+  if upstream
+    url = upstream
+  else
+    version = upstream_version.tr('~', '-')
+    release = YAML.safe_load(fetch(RELEASES_URL), permitted_classes: [Date]).find { it.fetch('version') == version }
+    abort "ruby #{version} is not in #{RELEASES_URL}" unless release
+    url = release.fetch('url').fetch('gz')
+    sha256 = release.fetch('sha256').fetch('gz')
+    upstream = File.join(tmp, File.basename(url))
+    File.binwrite(upstream, fetch(url))
+    actual = Digest::SHA256.file(upstream).hexdigest
+    abort "#{url}: sha256 is #{actual}, not #{sha256}" unless actual == sha256
+  end
 
   expected = manifest(upstream, File.join(tmp, 'upstream'))
   got = manifest(orig, File.join(tmp, 'orig'))
