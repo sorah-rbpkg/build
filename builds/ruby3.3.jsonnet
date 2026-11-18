@@ -6,4 +6,5 @@ series.ruby(
   distros=['focal', 'jammy', 'noble', 'bullseye', 'bookworm', 'trixie'],
   test=false,
   try=5,
+  releases_pr=4069,
 )

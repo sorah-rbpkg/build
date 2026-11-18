@@ -15,6 +15,7 @@
    "large_runner": true,
    "master": "master-3.4",
    "proposed": false,
+   "releases_pr": 4067,
    "repository": "sorah-rbpkg/ruby",
    "smoke": "ruby",
    "source": "ruby3.4",
