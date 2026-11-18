@@ -1,0 +1,76 @@
+name: verify-upstream
+
+# A series built with releases_pr trusted an unmerged ruby/www.ruby-lang.org pull request for its checksum.
+# Once the series drops it, the orig is checked against master's releases.yml.
+# No concurrency group: each run checks a different push.
+# jactionlint ignore=concurrency-limits
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'gen/builds/*.json'
+
+permissions: {}
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      origs: ${{ steps.plan.outputs.origs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # bin/plan diffs against the commit before the push.
+          fetch-depth: 0
+
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        with:
+          install_args: ruby
+
+      - name: plan
+        id: plan
+        run: echo "origs=$(bin/plan --lifted-since "$BEFORE" | jq -c .origs)" >> "$GITHUB_OUTPUT"
+        env:
+          BEFORE: ${{ github.event.before }}
+
+  verify:
+    name: verify (${{ matrix.orig.orig_name }})
+    needs: [plan]
+    if: needs.plan.outputs.origs != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        orig: ${{ fromJSON(needs.plan.outputs.origs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: generate
+        run: .github/scripts/orig.sh
+        env:
+          REPOSITORY: ${{ matrix.orig.repository }}
+          SOURCE: ${{ matrix.orig.source }}
+          UPSTREAM_VERSION: ${{ matrix.orig.upstream_version }}
+          UPSTREAM_COMMIT: ${{ matrix.orig.upstream_commit }}
+          ORIG_NAME: ${{ matrix.orig.orig_name }}
+
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        with:
+          install_args: ruby
+          # A restored cache could alter the check below.
+          cache: false
+
+      - name: verify
+        run: bin/verify-orig "out/${ORIG_NAME}" "$UPSTREAM_VERSION"
+        env:
+          UPSTREAM_VERSION: ${{ matrix.orig.upstream_version }}
+          ORIG_NAME: ${{ matrix.orig.orig_name }}

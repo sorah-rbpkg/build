@@ -20,7 +20,7 @@ local series(source, repository, master, commit, dist, distros, archs, smoke, la
 );
 
 {
-  ruby(version, commit, distros, master=null, proposed=false, test=true, try=null, nightly_drop=[])::
+  ruby(version, commit, distros, master=null, proposed=false, test=true, try=null, nightly_drop=[], releases_pr=null)::
     series(
       source='ruby%s' % version,
       repository='sorah-rbpkg/ruby',
@@ -38,6 +38,10 @@ local series(source, repository, master, commit, dist, distros, archs, smoke, la
     ) + (
       // Patches in debian/patches/series that the snapshot supersedes in another form, so neither applies nor reverts.
       if nightly_drop == [] then {} else { nightly_drop: nightly_drop }
+    ) + (
+      // A ruby/www.ruby-lang.org pull request whose releases.yml vouches for a release not announced yet.
+      // Dropping it checks the orig against master's releases.yml again, in verify-upstream.yml.
+      if releases_pr == null then {} else { releases_pr: releases_pr }
     ),
 
   // One series per default Ruby, each on its own branch.

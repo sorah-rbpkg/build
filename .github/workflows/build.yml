@@ -86,11 +86,13 @@ jobs:
           # A restored cache could alter the check below.
           cache: false
 
+      # verify-upstream.yml checks against master once the series drops releases_pr.
       - name: verify
-        run: bin/verify-orig "out/${ORIG_NAME}" "$UPSTREAM_VERSION"
+        run: bin/verify-orig ${RELEASES_PR:+--pr "$RELEASES_PR"} "out/${ORIG_NAME}" "$UPSTREAM_VERSION"
         env:
           UPSTREAM_VERSION: ${{ matrix.orig.upstream_version }}
           ORIG_NAME: ${{ matrix.orig.orig_name }}
+          RELEASES_PR: ${{ matrix.orig.releases_pr }}
 
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         id: attest

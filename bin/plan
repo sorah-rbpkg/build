@@ -1,8 +1,11 @@
 #!/usr/bin/env ruby
 # Usage: bin/plan [--since REV] [--distros a,b] [--test] [gen/builds/SERIES.json ...]
+#        bin/plan --lifted-since REV
 #
 # Prints the build targets as JSON: {"targets": [...], "origs": [...]}.
 # A distro whose debian/ tag already exists on the source repository is left out.
+#
+# --lifted-since prints no targets, only the origs of the series that dropped releases_pr since REV.
 require 'optparse'
 require_relative '../lib/plan'
 
@@ -21,8 +24,20 @@ def build_requested?(since, path)
   old, status = Open3.capture2('git', '-C', ROOT, 'show', "#{since}:#{path}", err: File::NULL)
   return true unless status.success?
 
+  old = JSON.parse(old)
   new = JSON.parse(File.read(File.join(ROOT, path)))
-  JSON.parse(old).slice(*BUILD_FIELDS) != new.slice(*BUILD_FIELDS)
+  # Dropping releases_pr is left to verify-upstream.yml.
+  return true if new['releases_pr'] && new['releases_pr'] != old['releases_pr']
+
+  old.slice(*BUILD_FIELDS) != new.slice(*BUILD_FIELDS)
+end
+
+def lifted_series(since)
+  return [] if since.nil? || since.match?(/\A0+\z/)
+
+  git('diff', '--name-only', '--diff-filter=M', since, 'HEAD', '--', 'gen/builds/*.json', dir: ROOT).lines(chomp: true).select do |path|
+    JSON.parse(git('show', "#{since}:#{path}", dir: ROOT))['releases_pr'] && !JSON.parse(File.read(File.join(ROOT, path)))['releases_pr']
+  end.map { File.join(ROOT, it) }
 end
 
 # Same transform as sorah-debuild's debian/ tag naming (DEP-14).
@@ -30,7 +45,8 @@ def tag_for(version)
   "debian/#{version.gsub(/\.(?=\.|\z|lock\z)/, '.#').tr('~:', '_%')}"
 end
 
-def plan_series(series, distro_filter:, test:)
+# The changelog head at the series commit, once that commit is known to be signed and on master.
+def series_head(series)
   raise "#{series.file}: dist must be dist or start with dist/" unless series.dist == 'dist' || series.dist.start_with?('dist/')
   raise "#{series.file}: commit must be a full SHA" unless series.commit.match?(/\A\h{40}\z/)
 
@@ -47,18 +63,33 @@ def plan_series(series, distro_filter:, test:)
   # The suite comes from the series, so a proposed release can later be promoted as it is.
   raise "#{series.file}: changelog distribution is #{m[:distribution]}, not unstable" unless m[:distribution] == 'unstable'
 
+  [dir, m]
+end
+
+def series_orig(series, version, dir:)
   # A version without a Debian revision is a native package, which has no orig tarball.
-  if m[:version].sub(/\A\d+:/, '').include?('-')
-    upstream_version = m[:version].sub(/\A\d+:/, '').sub(/-[^-]+\z/, '')
-    upstream_tag = "upstream/#{upstream_version.tr('~:', '_%')}"
-    git('fetch', '-q', '--filter=blob:none', '--no-tags', '--force', series.url, "+refs/tags/#{upstream_tag}:refs/tags/#{upstream_tag}", dir:)
-    verify_signature('tag', upstream_tag, dir:)
+  return unless version.sub(/\A\d+:/, '').include?('-')
+
+  upstream_version = version.sub(/\A\d+:/, '').sub(/-[^-]+\z/, '')
+  upstream_tag = "upstream/#{upstream_version.tr('~:', '_%')}"
+  git('fetch', '-q', '--filter=blob:none', '--no-tags', '--force', series.url, "+refs/tags/#{upstream_tag}:refs/tags/#{upstream_tag}", dir:)
+  verify_signature('tag', upstream_tag, dir:)
+  {
+    repository: series.repository,
+    source: series.source,
+    upstream_version:,
+    upstream_tag:,
     # The orig is archived from this commit rather than the tag, which could be moved after planning.
-    upstream_commit = git('rev-parse', "refs/tags/#{upstream_tag}^{commit}", dir:).strip
-    orig_name = "#{series.source}_#{upstream_version}.orig.tar.gz"
-  else
-    upstream_version = upstream_tag = upstream_commit = orig_name = nil
-  end
+    upstream_commit: git('rev-parse', "refs/tags/#{upstream_tag}^{commit}", dir:).strip,
+    orig_name: "#{series.source}_#{upstream_version}.orig.tar.gz",
+    releases_pr: series.releases_pr,
+  }
+end
+
+def plan_series(series, distro_filter:, test:)
+  dir, m = series_head(series)
+  orig = series_orig(series, m[:version], dir:) || {}
+  upstream_version, upstream_tag, upstream_commit, orig_name = orig.values_at(:upstream_version, :upstream_tag, :upstream_commit, :orig_name)
   existing_tags = git('ls-remote', '--tags', '--refs', series.url, 'refs/tags/debian/*')
     .lines(chomp: true).map { it.split("\t", 2).fetch(1).delete_prefix('refs/tags/') }
   existing_dists = git('ls-remote', '--heads', series.url, "refs/heads/#{series.dist}/*")
@@ -97,6 +128,7 @@ def plan_series(series, distro_filter:, test:)
       orig_name:,
       upstream_tag:,
       upstream_commit:,
+      releases_pr: orig[:releases_pr],
       image: image_for(distro),
       dockerfile: series.dockerfile(distro),
       smoke: series.smoke,
@@ -109,19 +141,31 @@ def plan_series(series, distro_filter:, test:)
 end
 
 since = nil
+lifted_since = nil
 distro_filter = nil
 test = false
 OptionParser.new do |o|
   o.on('--since REV') { since = it }
+  o.on('--lifted-since REV') { lifted_since = it }
   o.on('--distros LIST') { distro_filter = it.split(',').map(&:strip).reject(&:empty?) }
   o.on('--test', 'Release into test/ of this repository, and rebuild released distros') { test = true }
 end.parse!(ARGV)
+
+if lifted_since
+  origs = lifted_series(lifted_since).sort.filter_map do |file|
+    series = Series.load(file)
+    dir, m = series_head(series)
+    series_orig(series, m[:version], dir:)
+  end
+  puts JSON.generate({targets: [], origs:})
+  exit
+end
 
 files = ARGV.empty? ? changed_series(since) : ARGV.map { File.expand_path(it) }
 targets = files.sort.flat_map do |file|
   series = Series.load(file)
   plan_series(series, distro_filter:, test: test || series.test)
 end
-origs = targets.select { it[:orig_name] }.map { it.slice(:repository, :source, :upstream_version, :upstream_tag, :upstream_commit, :orig_name) }.uniq
+origs = targets.select { it[:orig_name] }.map { it.slice(:repository, :source, :upstream_version, :upstream_tag, :upstream_commit, :orig_name, :releases_pr) }.uniq
 
 puts JSON.generate({targets:, origs:})

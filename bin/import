@@ -14,19 +14,13 @@
 # not announced yet. Such a release's tarball is taken from cache.ruby-lang.org/pub/tmp/ until it is published.
 #
 # --push pushes those branches and tags after showing what they add.
-require 'date'
-require 'digest'
 require 'fileutils'
-require 'json'
-require 'net/http'
 require 'open3'
 require 'optparse'
-require 'yaml'
+require_relative '../lib/ruby_release'
 
 ROOT = File.expand_path('..', __dir__)
 REPOSITORY = 'sorah-rbpkg/ruby'
-# Kept in the www.ruby-lang.org repository, apart from the server that hosts the tarballs.
-WWW_REPOSITORY = 'ruby/www.ruby-lang.org'
 REVISION = '0nkmi1'
 
 Import = Data.define(:version, :series, :branch) do
@@ -48,14 +42,6 @@ def capture(*cmd, **opts)
   out
 end
 
-def releases_url(ref) = "https://raw.githubusercontent.com/#{WWW_REPOSITORY}/#{ref}/_data/releases.yml"
-
-def fetch(url)
-  res = Net::HTTP.get_response(URI(url))
-  raise "GET #{url}: #{res.code}" unless res.is_a?(Net::HTTPSuccess)
-  res.body
-end
-
 push = false
 prs = []
 ahead = {}
@@ -69,7 +55,7 @@ OptionParser.new do |o|
     abort "--branch takes SERIES=BRANCH, not #{it}" unless series&.match?(/\A\d+\.\d+\z/) && branch && !branch.empty?
     branches[series] = branch
   end
-  o.on('--pr NUMBER', Integer, "Take checksums from a pull request to #{WWW_REPOSITORY}") { prs << it }
+  o.on('--pr NUMBER', Integer, "Take checksums from a pull request to #{RubyRelease::WWW_REPOSITORY}") { prs << it }
   o.on('--ahead BRANCH=SHA', 'Import on top of unpushed commits up to SHA on BRANCH') do
     branch, sha = it.split('=', 2)
     abort "--ahead takes BRANCH=SHA, not #{it}" unless sha&.match?(/\A\h{40}\z/)
@@ -119,15 +105,7 @@ if push
   exit
 end
 
-release_sources = prs.map do |number|
-  pr = JSON.parse(fetch("https://api.github.com/repos/#{WWW_REPOSITORY}/pulls/#{number}"))
-  head = pr.fetch('head')
-  # Only a branch of the repository itself, so a fork cannot supply checksums.
-  abort "#{WWW_REPOSITORY}##{number} comes from a fork" unless head.fetch('repo')&.fetch('full_name') == WWW_REPOSITORY
-  puts "#{WWW_REPOSITORY}##{number} by #{pr.fetch('user').fetch('login')} at #{head.fetch('sha')}: #{pr.fetch('title')}"
-  releases_url(head.fetch('sha'))
-end
-releases = [*release_sources, releases_url('master')].to_h { [it, YAML.safe_load(fetch(it), permitted_classes: [Date])] }
+releases = RubyRelease::Index.load(prs:)
 imports.each do |imp|
   abort "#{imp.upstream_tag} already exists" if git_ok.('rev-parse', '--verify', '-q', "refs/tags/#{imp.upstream_tag}")
   [imp.branch, imp.upstream_branch, 'pristine-tar'].each do |b|
@@ -151,24 +129,9 @@ env = {
 }
 imports.each do |imp|
   puts "=> #{imp.source} #{imp.version} on #{imp.branch}"
-  release = releases.each_value.lazy.filter_map { |rs| rs.find { it.fetch('version') == imp.version } }.first or
-    abort "ruby #{imp.version} is in none of #{releases.keys.join(' ')}"
-  url = release.fetch('url').fetch('gz')
-  tarball = File.join(dir, File.basename(url))
-  res = Net::HTTP.get_response(URI(url))
-  case res
-  when Net::HTTPSuccess
-    File.binwrite(tarball, res.body)
-  when Net::HTTPNotFound
-    # Until the release is announced, its tarball is a draft in pub/tmp/.
-    draft_url = "https://cache.ruby-lang.org/pub/tmp/#{File.basename(url, '.tar.gz')}-draft.tar.gz"
-    puts "  #{url} is not there yet; taking #{draft_url}"
-    File.binwrite(tarball, fetch(draft_url))
-  else
-    raise "GET #{url}: #{res.code}"
-  end
-  sha256 = Digest::SHA256.file(tarball).hexdigest
-  abort "#{url}: sha256 is #{sha256}, not #{release.fetch('sha256').fetch('gz')}" unless sha256 == release.fetch('sha256').fetch('gz')
+  release = releases.find(imp.version)
+  tarball = File.join(dir, File.basename(release.fetch('url').fetch('gz')))
+  RubyRelease.download(release, tarball)
 
   run('git', 'checkout', '-q', imp.branch, chdir: source_dir)
   # debian/gbp.conf names branches of an older series, so they are given here.
