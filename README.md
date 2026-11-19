@@ -66,6 +66,7 @@ bin/promote --dry-run debian/1.20.1nkmi1_noble
 
 - A flaky job: re-run the failed jobs of the run.
 - A hung build: the debuild step kills itself after `quiet_seconds` in `watchdog.json` without output. To kill one sooner, add the `JOB_ID RUN_ATTEMPT` line its debuild step prints to `kills.txt` and push. Running builds read both files from `main` every minute.
+- A release job failing at "verify against releases.yml" for a release whose checksum `master` of ruby/www.ruby-lang.org does not list yet, or ever: once you trust the tarball, add `VERSION SHA256` from `checksums/ruby-VERSION.json` to `trusted-checksums.txt`, push it, and re-run the failed jobs. The release job reads that file from `main` when it runs.
 - A packaging fix: commit it to `master`, then `bin/roll <branch>` and push. Only distros without a `debian/` tag are built again.
 - A deliberate rebuild: bump `try` in `builds/<series>.jsonnet` and push, or run the `build` workflow by hand with `series` and optionally `distros`. Either way, only distros without a `debian/` tag are built unless the run is in test mode.
 

@@ -220,10 +220,13 @@ jobs:
         run: sha256sum out/*
 
       # The build may have trusted an unannounced release, so nothing is released until master's releases.yml
-      # agrees with both the orig and checksums/.
+      # agrees with both the orig and checksums/, or trusted-checksums.txt on main lists it.
       - name: verify against releases.yml
         if: fromJSON(inputs.target).orig_name
-        run: bin/verify-orig --master "out/${ORIG_NAME}" "$UPSTREAM_VERSION"
+        run: |
+          git fetch -q --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" main
+          git show FETCH_HEAD:trusted-checksums.txt > "${RUNNER_TEMP}/trusted-checksums.txt"
+          bin/verify-orig --master --trusted "${RUNNER_TEMP}/trusted-checksums.txt" "out/${ORIG_NAME}" "$UPSTREAM_VERSION"
         env:
           ORIG_NAME: ${{ fromJSON(inputs.target).orig_name }}
           UPSTREAM_VERSION: ${{ fromJSON(inputs.target).upstream_version }}

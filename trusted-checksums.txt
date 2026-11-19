@@ -1,0 +1,2 @@
+# Release tarball checksums the release gate trusts without master's releases.yml, one "VERSION SHA256" per
+# line, matching checksums/ruby-VERSION.json. A release job reads this from main when it runs.

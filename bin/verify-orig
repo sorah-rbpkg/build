@@ -1,10 +1,11 @@
 #!/usr/bin/env ruby
-# Usage: bin/verify-orig [--master | --upstream TARBALL] ORIG_TARBALL UPSTREAM_VERSION
+# Usage: bin/verify-orig [--master [--trusted FILE] | --upstream TARBALL] ORIG_TARBALL UPSTREAM_VERSION
 #
 # Checks that an orig tarball holds the same files as the ruby-lang.org release of UPSTREAM_VERSION, whose tarball
 # is checked against checksums/ruby-<version>.json, or against master's releases.yml for a version without one.
 #
-# --master checks against master's releases.yml, and that checksums/ agrees with it.
+# --master checks against master's releases.yml, and that checksums/ agrees with it, unless the trusted-checksums.txt
+# FILE given with --trusted lists the committed checksum.
 # --upstream compares against a release tarball the caller has already checked instead.
 require 'digest'
 require 'find'
@@ -33,12 +34,15 @@ end
 
 upstream = nil
 master = false
+trusted = nil
 OptionParser.new do |o|
   o.on('--master', "Check against master's releases.yml, and that checksums/ agrees with it") { master = true }
+  o.on('--trusted FILE', 'Checksums trusted without master, as in trusted-checksums.txt') { trusted = it }
   o.on('--upstream TARBALL', 'Release tarball already checked against its sha256') { upstream = File.expand_path(it) }
 end.parse!(ARGV)
 orig, upstream_version = ARGV
-abort 'Usage: bin/verify-orig [--master | --upstream TARBALL] ORIG_TARBALL UPSTREAM_VERSION' unless orig && upstream_version
+abort 'Usage: bin/verify-orig [--master [--trusted FILE] | --upstream TARBALL] ORIG_TARBALL UPSTREAM_VERSION' unless orig && upstream_version
+abort '--trusted needs --master' if trusted && !master
 abort '--master and --upstream do not mix' if master && upstream
 
 Dir.mktmpdir('verify-orig') do |tmp|
@@ -47,6 +51,11 @@ Dir.mktmpdir('verify-orig') do |tmp|
   else
     version = upstream_version.tr('~', '-')
     committed = RubyRelease::Checksum.read(version)
+    trusted_lines = trusted ? File.readlines(trusted, chomp: true).map { it.sub(/#.*/, '').strip } : []
+    if master && committed && trusted_lines.include?("#{version} #{committed.sha256}")
+      warn "#{trusted} lists #{version} #{committed.sha256}, so master's releases.yml is not consulted"
+      master = false
+    end
     checksum = master || !committed ? RubyRelease::Index.load.find(version) : committed
     if master && committed && committed.sha256 != checksum.sha256
       abort "#{committed.path} has sha256 #{committed.sha256} from #{committed.source}, but #{checksum.source} has #{checksum.sha256}"
