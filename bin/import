@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # Usage: bin/import [--source-dir DIR] [--branch SERIES=BRANCH]... [--ahead BRANCH=SHA]... [--pr NUMBER]... VERSION...
 #        bin/import --push [--source-dir DIR] [--branch SERIES=BRANCH]... VERSION...
+#        bin/import --checksum-only [--pr NUMBER]... VERSION...
 #
 # Imports the ruby-lang.org release of each VERSION into a local checkout of sorah-rbpkg/ruby, ../ruby by
 # default: gbp import-orig puts it on upstream-N.M with a signed upstream/<version> tag and merges it into
@@ -12,6 +13,8 @@
 #
 # Checksums come from www.ruby-lang.org, or from each --pr pull request to it ahead of master, for a release
 # not announced yet. Such a release's tarball is taken from cache.ruby-lang.org/pub/tmp/ until it is published.
+# The checksum it trusted is written to checksums/ruby-<version>.json here, which bin/roll commits and the build
+# verifies against. --checksum-only writes just that, for a version imported without one.
 #
 # --push pushes those branches and tags after showing what they add.
 require 'fileutils'
@@ -43,12 +46,14 @@ def capture(*cmd, **opts)
 end
 
 push = false
+checksum_only = false
 prs = []
 ahead = {}
 branches = {}
 source_dir = File.expand_path('../ruby', ROOT)
 OptionParser.new do |o|
   o.on('--push', 'Push what an earlier run imported') { push = true }
+  o.on('--checksum-only', 'Only write checksums/ruby-<version>.json') { checksum_only = true }
   o.on('--source-dir DIR', 'Local checkout of sorah-rbpkg/ruby') { source_dir = File.expand_path(it) }
   o.on('--branch SERIES=BRANCH', 'Debian branch of SERIES, rather than master or master-N.M') do
     series, branch = it.split('=', 2)
@@ -62,7 +67,16 @@ OptionParser.new do |o|
     ahead[branch] = sha
   end
 end.parse!(ARGV)
-abort 'Usage: bin/import [--push] [--source-dir DIR] [--branch SERIES=BRANCH]... [--ahead BRANCH=SHA]... [--pr NUMBER]... VERSION...' if ARGV.empty?
+abort 'Usage: bin/import [--push | --checksum-only] [--source-dir DIR] [--branch SERIES=BRANCH]... [--ahead BRANCH=SHA]... [--pr NUMBER]... VERSION...' if ARGV.empty?
+if checksum_only
+  releases = RubyRelease::Index.load(prs:)
+  ARGV.each do |version|
+    checksum = releases.find(version)
+    checksum.write
+    puts "#{checksum.path}: #{checksum.sha256} from #{checksum.source}"
+  end
+  exit
+end
 abort "#{source_dir} is not a checkout of #{REPOSITORY}; pass --source-dir" unless File.directory?(File.join(source_dir, '.git'))
 
 git = ->(*args) { capture('git', *args, chdir: source_dir) }
@@ -129,9 +143,11 @@ env = {
 }
 imports.each do |imp|
   puts "=> #{imp.source} #{imp.version} on #{imp.branch}"
-  release = releases.find(imp.version)
-  tarball = File.join(dir, File.basename(release.fetch('url').fetch('gz')))
-  RubyRelease.download(release, tarball)
+  checksum = releases.find(imp.version)
+  tarball = File.join(dir, File.basename(checksum.url))
+  RubyRelease.download(checksum, tarball)
+  checksum.write
+  puts "  #{checksum.path}: #{checksum.sha256} from #{checksum.source}"
 
   run('git', 'checkout', '-q', imp.branch, chdir: source_dir)
   # debian/gbp.conf names branches of an older series, so they are given here.

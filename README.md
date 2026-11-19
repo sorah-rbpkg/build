@@ -13,7 +13,7 @@ bin/import 4.0.9 3.4.12                      # one version per series
 bin/import --push 4.0.9 3.4.12
 bin/import --ahead pristine-tar=<SHA> 3.3.13  # on top of an earlier import not yet pushed
 bin/import --branch 4.1=next-4.1 4.1.0-preview2  # a series not on master or master-N.M
-bin/import --pr 4069 3.3.14                  # not announced yet; also set releases_pr in builds/ruby3.3.jsonnet
+bin/import --pr 4069 3.3.14                  # not announced yet: checksums from that pull request
 ```
 
 Before rolling, make sure `debian/patches` still applies to each branch, and drop or refresh the patches it reports with `gbp pq` (`bin/import` and `bin/roll` run the same check, but only warn):

@@ -219,10 +219,11 @@ jobs:
       - name: checksums
         run: sha256sum out/*
 
-      # The build may have trusted an unannounced release, so nothing is released until master's releases.yml agrees.
+      # The build may have trusted an unannounced release, so nothing is released until master's releases.yml
+      # agrees with both the orig and checksums/.
       - name: verify against releases.yml
         if: fromJSON(inputs.target).orig_name
-        run: bin/verify-orig "out/${ORIG_NAME}" "$UPSTREAM_VERSION"
+        run: bin/verify-orig --master "out/${ORIG_NAME}" "$UPSTREAM_VERSION"
         env:
           ORIG_NAME: ${{ fromJSON(inputs.target).orig_name }}
           UPSTREAM_VERSION: ${{ fromJSON(inputs.target).upstream_version }}

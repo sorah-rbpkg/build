@@ -7,15 +7,17 @@
 # before anything is committed. Pushing the commits starts the builds.
 #
 # A local checkout of the source repository, ../<repo> by default, must have pushed REV's branch and, unless
-# it is a native package, its upstream tag, as REV is resolved on GitHub.
+# it is a native package, its upstream tag, as REV is resolved on GitHub. A draft/<branch> REV rolls the series
+# of <branch>. Unless native, the commit also carries checksums/ruby-<version>.json, which bin/import writes.
 require 'fileutils'
 require 'json'
 require 'open3'
 require 'optparse'
+require_relative '../lib/ruby_release'
 
 ROOT = File.expand_path('..', __dir__)
 
-Roll = Data.define(:rev, :commit, :source, :version, :upstream_tag, :id) do
+Roll = Data.define(:rev, :commit, :source, :version, :upstream_tag, :checksum, :id) do
   def src = File.join('builds', "#{id}.jsonnet")
   def json = File.join('gen', 'builds', "#{id}.json")
 end
@@ -55,7 +57,7 @@ def find_series(builds, repository:, source:, rev:, series_id:)
   return series_id if series_id
 
   candidates = builds.select { |_, b| b.fetch('repository') == repository && b.fetch('source') == source }
-  candidates = candidates.select { |_, b| b.fetch('master') == rev } if candidates.size > 1
+  candidates = candidates.select { |_, b| b.fetch('master') == rev.delete_prefix('draft/') } if candidates.size > 1
   abort "#{rev}: no series under builds/ builds #{source} from #{repository}" if candidates.empty?
   abort "#{rev}: several series build #{source}; pass --series" if candidates.size > 1
   candidates.keys.first
@@ -71,10 +73,10 @@ rolls = ARGV.map do |rev|
   head = capture('git', '-C', dir, 'cat-file', 'blob', "#{commit}:debian/changelog").lines.first
   m = head.match(/\A(?<source>\S+) \((?<version>[^)]+)\)/) or abort "#{rev}: cannot parse changelog: #{head}"
   # A native package, without a Debian revision, has no upstream tag.
-  upstream_tag = if m[:version].sub(/\A\d+:/, '').include?('-')
-    "upstream/#{m[:version].sub(/\A\d+:/, '').sub(/-[^-]+\z/, '').tr('~:', '_%')}"
-  end
-  Roll.new(rev:, commit:, source: m[:source], version: m[:version].sub('~dist', ''), upstream_tag:,
+  upstream_version = m[:version].sub(/\A\d+:/, '').sub(/-[^-]+\z/, '') if m[:version].sub(/\A\d+:/, '').include?('-')
+  upstream_tag = "upstream/#{upstream_version.tr('~:', '_%')}" if upstream_version
+  checksum = RubyRelease::Checksum.path(upstream_version.tr('~', '-')).delete_prefix("#{ROOT}/") if upstream_version
+  Roll.new(rev:, commit:, source: m[:source], version: m[:version].sub('~dist', ''), upstream_tag:, checksum:,
     id: find_series(builds, repository:, source: m[:source], rev:, series_id:))
 end
 
@@ -102,6 +104,9 @@ end
 rolls.each do |roll|
   abort "#{roll.rev} is #{roll.id}, which has no #{roll.src}" unless File.exist?(File.join(ROOT, roll.src))
   abort "#{roll.src} or #{roll.json} has uncommitted changes" unless capture('git', 'status', '--porcelain', '--', roll.src, roll.json).empty?
+  if roll.checksum && !File.exist?(File.join(ROOT, roll.checksum))
+    abort "#{roll.rev}: no #{roll.checksum}; bin/import writes it, or run bin/import --checksum-only #{File.basename(roll.checksum, '.json').delete_prefix('ruby-')}"
+  end
 end
 
 rolls = rolls.reject do |roll|
@@ -143,7 +148,7 @@ plans.each do |roll, targets|
     "Builds #{targets.map { it.fetch('distro') }.join(', ')}#{test ? ' in test mode' : ''}."
   end
   File.write(message, ["roll #{roll.source} #{roll.version}", '', "#{repository}@#{roll.commit}", '', summary].join("\n"))
-  run('git', 'add', '--', roll.src, roll.json)
+  run('git', 'add', '--', roll.src, roll.json, *roll.checksum)
   run('git', 'commit', '-q', '-F', message)
   run('git', '--no-pager', 'show', '--format=%h %s%n%n%b')
 end

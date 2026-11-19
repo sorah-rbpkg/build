@@ -5,6 +5,7 @@
 # A distro whose debian/ tag already exists on the source repository is left out.
 require 'optparse'
 require_relative '../lib/plan'
+require_relative '../lib/ruby_release'
 
 def changed_series(since)
   # A push that creates the branch has no previous commit to compare with.
@@ -23,8 +24,6 @@ def build_requested?(since, path)
 
   old = JSON.parse(old)
   new = JSON.parse(File.read(File.join(ROOT, path)))
-  return true if new['releases_pr'] && new['releases_pr'] != old['releases_pr']
-
   old.slice(*BUILD_FIELDS) != new.slice(*BUILD_FIELDS)
 end
 
@@ -33,14 +32,25 @@ def tag_for(version)
   "debian/#{version.gsub(/\.(?=\.|\z|lock\z)/, '.#').tr('~:', '_%')}"
 end
 
-# The changelog head at the series commit, once that commit is known to be signed and on master.
+# A version without a Debian revision is a native package, which has no orig tarball.
+def upstream_version_of(version)
+  version.sub(/\A\d+:/, '').sub(/-[^-]+\z/, '') if version.sub(/\A\d+:/, '').include?('-')
+end
+
+# The changelog head at the series commit, once that commit is known to be signed and on master, or on
+# draft/<master> for a release whose committed checksum came from its draft.
 def series_head(series)
   raise "#{series.file}: dist must be dist or start with dist/" unless series.dist == 'dist' || series.dist.start_with?('dist/')
   raise "#{series.file}: commit must be a full SHA" unless series.commit.match?(/\A\h{40}\z/)
 
   dir = fetch_master(series)
-  unless git?('merge-base', '--is-ancestor', series.commit, "refs/remotes/origin/#{series.master}", dir:)
-    raise "#{series.file}: #{series.commit} is not on #{series.repository} #{series.master}"
+  draft = "draft/#{series.master}"
+  on_master = git?('merge-base', '--is-ancestor', series.commit, "refs/remotes/origin/#{series.master}", dir:)
+  unless on_master
+    git?('fetch', '-q', '--filter=blob:none', '--no-tags', series.url, "+refs/heads/#{draft}:refs/remotes/origin/#{draft}", dir:)
+    unless git?('merge-base', '--is-ancestor', series.commit, "refs/remotes/origin/#{draft}", dir:)
+      raise "#{series.file}: #{series.commit} is not on #{series.repository} #{series.master}"
+    end
   end
   verify_signature('commit', series.commit, dir:)
 
@@ -50,15 +60,17 @@ def series_head(series)
   raise "#{series.file}: changelog version #{m[:version]} has no ~dist" unless m[:version].include?('~dist')
   # The suite comes from the series, so a proposed release can later be promoted as it is.
   raise "#{series.file}: changelog distribution is #{m[:distribution]}, not unstable" unless m[:distribution] == 'unstable'
+  unless on_master
+    upstream_version = upstream_version_of(m[:version])
+    checksum = RubyRelease::Checksum.read(upstream_version.tr('~', '-')) if upstream_version
+    raise "#{series.file}: #{series.commit} is only on #{draft}, but its checksum is not from a draft" unless checksum&.source == 'draft'
+  end
 
   [dir, m]
 end
 
 def series_orig(series, version, dir:)
-  # A version without a Debian revision is a native package, which has no orig tarball.
-  return unless version.sub(/\A\d+:/, '').include?('-')
-
-  upstream_version = version.sub(/\A\d+:/, '').sub(/-[^-]+\z/, '')
+  upstream_version = upstream_version_of(version) or return
   upstream_tag = "upstream/#{upstream_version.tr('~:', '_%')}"
   git('fetch', '-q', '--filter=blob:none', '--no-tags', '--force', series.url, "+refs/tags/#{upstream_tag}:refs/tags/#{upstream_tag}", dir:)
   verify_signature('tag', upstream_tag, dir:)
@@ -70,7 +82,6 @@ def series_orig(series, version, dir:)
     # The orig is archived from this commit rather than the tag, which could be moved after planning.
     upstream_commit: git('rev-parse', "refs/tags/#{upstream_tag}^{commit}", dir:).strip,
     orig_name: "#{series.source}_#{upstream_version}.orig.tar.gz",
-    releases_pr: series.releases_pr,
   }
 end
 
@@ -116,7 +127,6 @@ def plan_series(series, distro_filter:, test:)
       orig_name:,
       upstream_tag:,
       upstream_commit:,
-      releases_pr: orig[:releases_pr],
       image: image_for(distro),
       dockerfile: series.dockerfile(distro),
       smoke: series.smoke,
@@ -142,6 +152,6 @@ targets = files.sort.flat_map do |file|
   series = Series.load(file)
   plan_series(series, distro_filter:, test: test || series.test)
 end
-origs = targets.select { it[:orig_name] }.map { it.slice(:repository, :source, :upstream_version, :upstream_tag, :upstream_commit, :orig_name, :releases_pr) }.uniq
+origs = targets.select { it[:orig_name] }.map { it.slice(:repository, :source, :upstream_version, :upstream_tag, :upstream_commit, :orig_name) }.uniq
 
 puts JSON.generate({targets:, origs:})
