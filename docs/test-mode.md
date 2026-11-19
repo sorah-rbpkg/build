@@ -1,6 +1,6 @@
 # Test mode
 
-A series with `"test": true` runs every build in test mode, including those started by a push. Series start that way, and real releases begin with a reviewed change to `false`. Running the `build` workflow by hand with `test` checked does the same for one run.
+A series with `"test": true` runs every build in test mode, including those started by a push. Series start that way, and `bin/roll` sets `test=false` once it rolls a new release into one: an upstream version other than the one the series is at, or a new version of a native package. Rolls of the same release keep the series in test mode. Running the `build` workflow by hand with `test` checked does the same for one run.
 
 A test run goes through every job, approval included, without writing to sorah-rbpkg/ruby:
 

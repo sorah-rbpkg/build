@@ -9,6 +9,9 @@
 # A local checkout of the source repository, ../<repo> by default, must have pushed REV's branch and, unless
 # it is a native package, its upstream tag, as REV is resolved on GitHub. A draft/<branch> REV rolls the series
 # of <branch>. Unless native, the commit also carries checksums/ruby-<version>.json, which bin/import writes.
+#
+# A series in test mode leaves it once REV is a new release, an upstream version other than that of the commit
+# it is at, or a new version of a native package. Further rolls of the same release stay as they are.
 require 'fileutils'
 require 'json'
 require 'open3'
@@ -80,6 +83,25 @@ rolls = ARGV.map do |rev|
     id: find_series(builds, repository:, source: m[:source], rev:, series_id:))
 end
 
+# The release a changelog version belongs to: its upstream version, or the whole version of a native package.
+def release_of(version)
+  v = version.sub(/\A\d+:/, '').sub('~dist', '')
+  v.include?('-') ? v.sub(/-[^-]+\z/, '') : v
+end
+
+def changelog_version(dir, commit)
+  head = capture('git', '-C', dir, 'cat-file', 'blob', "#{commit}:debian/changelog").lines.first
+  head[/\A\S+ \(([^)]+)\)/, 1] or abort "#{commit}: cannot parse changelog: #{head}"
+end
+
+# Sets test=false in a series file, where ruby() defaults to test=true when it is not given.
+def lift_test(text, src)
+  return text.sub(/^(\s*)test=true,$/, 'test=false,') if text.scan(/^\s*test=true,$/).size == 1
+  raise "#{src}: cannot find test=true to lift" if text.match?(/\btest=/)
+
+  text.sub(/^(\s*)(commit='\h{40}',\n)/) { "#{$1}#{$2}#{$1}test=false,\n" } or raise "#{src}: cannot find commit= to add test=false after"
+end
+
 def local_rev(dir, ref)
   out, status = Open3.capture2('git', '-C', dir, 'rev-parse', '--verify', '-q', ref)
   status.success? ? out.strip : nil
@@ -118,13 +140,23 @@ rolls = rolls.reject do |roll|
 end
 exit if rolls.empty?
 
+lifted = []
 plans = begin
   rolls.each do |roll|
     path = File.join(ROOT, roll.src)
-    current = JSON.parse(File.read(File.join(ROOT, roll.json))).fetch('commit')
+    series = JSON.parse(File.read(File.join(ROOT, roll.json)))
+    current = series.fetch('commit')
     text = File.read(path)
     raise "#{roll.src} does not mention #{current} exactly once" unless text.scan(current).size == 1
-    File.write(path, text.sub(current, roll.commit))
+    text = text.sub(current, roll.commit)
+    if series.fetch('test')
+      capture('git', '-C', dir, 'fetch', '-q', '--filter=blob:none', '--no-tags', url, current)
+      if release_of(changelog_version(dir, current)) != release_of(roll.version)
+        text = lift_test(text, roll.src)
+        lifted << roll
+      end
+    end
+    File.write(path, text)
   end
   run('bin/generate')
   rolls.to_h { [it, JSON.parse(capture('bin/plan', it.json)).fetch('targets')] }
@@ -147,6 +179,7 @@ plans.each do |roll, targets|
   else
     "Builds #{targets.map { it.fetch('distro') }.join(', ')}#{test ? ' in test mode' : ''}."
   end
+  summary += " Leaves test mode, as #{release_of(roll.version)} is a new release." if lifted.include?(roll)
   File.write(message, ["roll #{roll.source} #{roll.version}", '', "#{repository}@#{roll.commit}", '', summary].join("\n"))
   run('git', 'add', '--', roll.src, roll.json, *roll.checksum)
   run('git', 'commit', '-q', '-F', message)

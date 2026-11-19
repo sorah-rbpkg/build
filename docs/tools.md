@@ -18,7 +18,7 @@ The scripts under [`bin/`](../bin) that take a release from ruby-lang.org to the
 
 ## bin/roll
 
-`bin/roll` reads the source package from `debian/changelog` at each revision to find its series, sets `commit` in `builds/<series>.jsonnet`, and runs `bin/generate`. It checks every series with `bin/plan` before committing any, then commits each as `roll <series> <version>`, together with `checksums/ruby-<upstream version>.json` unless the package is native. A `draft/<branch>` revision rolls the series of `<branch>`. It first makes sure your checkout of sorah-rbpkg/ruby, `../ruby` by default, has pushed each branch and its `upstream/<version>` tag.
+`bin/roll` reads the source package from `debian/changelog` at each revision to find its series, sets `commit` in `builds/<series>.jsonnet`, and runs `bin/generate`. It checks every series with `bin/plan` before committing any, then commits each as `roll <series> <version>`, together with `checksums/ruby-<upstream version>.json` unless the package is native. A `draft/<branch>` revision rolls the series of `<branch>`. A series in [test mode](./test-mode.md) leaves it when the revision is a new release. It first makes sure your checkout of sorah-rbpkg/ruby, `../ruby` by default, has pushed each branch and its `upstream/<version>` tag.
 
 ## bin/publish
 

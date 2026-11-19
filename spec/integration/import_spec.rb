@@ -210,6 +210,43 @@ RSpec.describe 'bin/import' do
       expect(targets.map { it.fetch('distro') }).to eq(['trixie'])
     end
 
+    def series_src = File.join(world.build_dir, 'builds', 'ruby9.9.jsonnet')
+
+    def set_test(text)
+      File.write(series_src, text)
+      world.sh('bin/generate', chdir: world.build_dir)
+      world.git(world.build_dir, 'commit', '-q', '-am', 'test mode')
+    end
+
+    it 'lifts test mode when rolling a new release' do
+      set_test(File.read(series_src).sub('test=false,', 'test=true,'))
+      drafted
+      result = expect_success(roll('draft/master'))
+      expect(series.fetch('test')).to be(false)
+      expect(File.read(series_src)).to include('test=false,')
+      expect(result.output).to include('Leaves test mode, as 9.9.1 is a new release.')
+    end
+
+    it 'adds test=false to a series relying on the test=true default' do
+      set_test(File.read(series_src).sub("  test=false,\n", ''))
+      expect(series.fetch('test')).to be(true)
+      drafted
+      expect_success(roll('draft/master'))
+      expect(series.fetch('test')).to be(false)
+    end
+
+    it 'keeps test mode for another roll of the same release' do
+      drafted
+      expect_success(roll('draft/master'))
+      set_test(File.read(series_src).sub('test=false,', 'test=true,'))
+      world.git(ruby, 'checkout', '-q', 'draft/master')
+      world.git(ruby, 'commit', '-q', '--allow-empty', '-m', 'packaging fix')
+      expect_success(import('--push', '--draft', '--yes', '9.9.1'))
+      result = expect_success(roll('draft/master'))
+      expect(series.fetch('test')).to be(true)
+      expect(result.output).to include('in test mode')
+    end
+
     it 'refuses a non-native roll without a checksum' do
       drafted
       File.delete(File.join(world.build_dir, 'checksums', 'ruby-9.9.1.json'))
