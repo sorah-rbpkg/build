@@ -1,0 +1,84 @@
+#!/usr/bin/env ruby
+# Usage: bin/releng-watch [--no-push] [--once] [--min-interval SEC] [--max-interval SEC] [--source-dir DIR]
+#                         [--branch SERIES=BRANCH]... VERSION...
+#        bin/releng-watch --status
+#        bin/releng-watch --reset VERSION...
+#
+# Follows each ruby VERSION from its upstream draft to its release: imports the draft with bin/import --draft,
+# checks debian/patches, pushes and rolls it, throws it away when upstream re-cuts it, finalizes it once
+# published, and waits for the announcement. Whatever needs a person is listed under ACTION REQUIRED.
+# See docs/releng-watch.md.
+#
+# --no-push does what stays local and prints the pushes for you to run. --once polls once, then exits.
+# --status prints the last poll's list. --reset forgets what the monitor knew of VERSION.
+require 'fileutils'
+require 'io/wait'
+require 'optparse'
+require_relative '../lib/releng/monitor'
+
+ROOT = File.expand_path('..', __dir__)
+DIR = File.join(ROOT, 'tmp', 'releng-watch')
+
+push = true
+once = false
+min = 15
+max = 600
+source_dir = File.expand_path('../ruby', ROOT)
+branches = {}
+mode = :watch
+OptionParser.new do |o|
+  o.on('--no-push', 'Print the pushes instead of running them') { push = false }
+  o.on('--once', 'Poll once, then exit') { once = true }
+  o.on('--min-interval SEC', Integer) { min = it }
+  o.on('--max-interval SEC', Integer) { max = it }
+  o.on('--source-dir DIR', 'Local checkout of sorah-rbpkg/ruby') { source_dir = File.expand_path(it) }
+  o.on('--branch SERIES=BRANCH', 'Debian branch of SERIES, as for bin/import') do
+    series, branch = it.split('=', 2)
+    abort "--branch takes SERIES=BRANCH, not #{it}" unless series&.match?(/\A\d+\.\d+\z/) && branch && !branch.empty?
+    branches[series] = branch
+  end
+  o.on('--status', 'Print the last poll') { mode = :status }
+  o.on('--reset', 'Forget the state of each VERSION') { mode = :reset }
+end.parse!(ARGV)
+
+case mode
+when :status
+  path = File.join(DIR, 'status.txt')
+  abort 'bin/releng-watch has not polled yet' unless File.exist?(path)
+  puts "as of #{File.mtime(path)}:", File.read(path)
+  exit
+when :reset
+  abort 'Usage: bin/releng-watch --reset VERSION...' if ARGV.empty?
+  ARGV.each { FileUtils.rm_f(File.join(DIR, "#{it}.json")) }
+  exit
+end
+abort 'Usage: bin/releng-watch [--no-push] [--once] [--min-interval SEC] [--max-interval SEC] [--source-dir DIR] [--branch SERIES=BRANCH]... VERSION...' if ARGV.empty?
+
+FileUtils.mkdir_p(DIR)
+lock = File.open(File.join(DIR, 'lock'), File::RDWR | File::CREAT)
+abort 'another bin/releng-watch is running' unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+
+$stdout.sync = true
+monitor = Releng::Monitor.new(root: ROOT, source_dir:, versions: ARGV, push:, branches:)
+loop do
+  begin
+    _, delay = monitor.poll(min:, max:)
+  rescue Releng::External::Error => e
+    warn "poll failed, retrying: #{e.message}"
+    delay = min
+  end
+  if delay.nil?
+    puts 'every distro is released; run bin/publish'
+    break
+  end
+  break if once
+
+  # Jittered, so restarts do not line up with upstream's schedules.
+  delay = (delay * (0.9 + (0.2 * rand))).round
+  if $stdin.tty?
+    print "next poll in #{delay}s; press Enter to poll now\r"
+    $stdin.gets if $stdin.wait_readable(delay)
+  else
+    sleep delay
+  end
+end

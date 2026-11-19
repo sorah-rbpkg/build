@@ -2,6 +2,7 @@ require 'digest'
 require 'fileutils'
 require 'json'
 require 'open3'
+require 'time'
 require 'tmpdir'
 require 'yaml'
 
@@ -11,6 +12,9 @@ class World
   ROOT = File.expand_path('../..', __dir__)
   CACHE = 'https://cache.ruby-lang.org/pub'
   RELEASES_URL = 'https://raw.githubusercontent.com/ruby/www.ruby-lang.org/master/_data/releases.yml'
+  DRAFT_RUNS = 'repos/ruby/actions/actions/workflows/draft-release.yml/runs?per_page=10'
+  PUBLISH_RUNS = 'repos/ruby/ruby/actions/workflows/publish.yml/runs?per_page=5'
+  BUILD_RUNS = 'repos/sorah-rbpkg/build/actions/workflows/build.yml/runs?per_page=20'
   NAME = 'Releng Test'
   EMAIL = 'releng-test@example.invalid'
 
@@ -28,7 +32,16 @@ class World
   def initialize(dir)
     @dir = dir
     @tarballs = {}
-    @scenario = {'http' => {}, 'github' => {}, 'signing' => true}
+    @scenario = {
+      'http' => {RELEASES_URL => {'body' => YAML.dump([])}},
+      'github' => {
+        "GET #{DRAFT_RUNS}" => {'workflow_runs' => []},
+        "GET #{PUBLISH_RUNS}" => {'workflow_runs' => []},
+        "GET #{BUILD_RUNS}" => {'workflow_runs' => []},
+        'GET repos/ruby/www.ruby-lang.org/pulls?head=ruby:releases/9.9.1&state=all' => [],
+      },
+      'signing' => true,
+    }
     @env = {
       'GNUPGHOME' => path('gnupg'),
       'GIT_CONFIG_GLOBAL' => path('gitconfig'),
@@ -128,6 +141,62 @@ class World
       s['http'][RELEASES_URL] = {'body' => YAML.dump([release_entry(version, tarball), *entries])}
     end
   end
+
+  # matzbot's pull request to www.ruby-lang.org, whose releases.yml at its head lists version with tarball's sha256.
+  def pull_request(version, number:, tarball: self.tarball(version), at: Time.now)
+    head = Digest::SHA1.hexdigest("pr#{number}")
+    update_scenario do |s|
+      s['github']["GET repos/ruby/www.ruby-lang.org/pulls?head=ruby:releases/#{version}&state=all"] = [{
+        'number' => number, 'html_url' => "https://github.com/ruby/www.ruby-lang.org/pull/#{number}",
+        'head' => {'sha' => head, 'repo' => {'full_name' => 'ruby/www.ruby-lang.org'}},
+        'created_at' => at.utc.iso8601, 'updated_at' => at.utc.iso8601,
+      }]
+      s['http']["https://raw.githubusercontent.com/ruby/www.ruby-lang.org/#{head}/_data/releases.yml"] =
+        {'body' => YAML.dump([release_entry(version, tarball)])}
+    end
+  end
+
+  def job(name, status: 'completed', conclusion: 'success') = {'name' => name, 'status' => status, 'conclusion' => conclusion}
+
+  # The jobs of one distro of a series, all succeeded unless overridden, and the release waiting for approval.
+  def distro_jobs(series, distro, release: :waiting, **overrides)
+    names = %w[merge build\ (amd64) build\ (arm64) smoke\ (amd64) smoke\ (arm64)]
+    jobs = names.map { job("#{series} #{distro} / #{it}", **overrides.fetch(it, {})) }
+    jobs << case release
+    when :waiting then job("#{series} #{distro} / release", status: 'waiting', conclusion: nil)
+    when :success then job("#{series} #{distro} / release")
+    when :skipped then job("#{series} #{distro} / release", conclusion: 'skipped')
+    end
+    jobs.compact
+  end
+
+  # Replaces build.yml's runs, newest first as the API lists them, each a Hash with id, jobs and optional
+  # attempt, status, conclusion and created_at.
+  def build_runs(*runs)
+    update_scenario do |s|
+      listed = runs.map do |run|
+        created = (run[:created_at] || Time.now).utc.iso8601
+        attempt = run.fetch(:attempt, 1)
+        path = "GET repos/sorah-rbpkg/build/actions/runs/#{run.fetch(:id)}/attempts/#{attempt}/jobs?per_page=100"
+        run.fetch(:jobs).each_slice(100).with_index(1) do |jobs, page|
+          s['github'][page == 1 ? path : "#{path}&page=#{page}"] = {'total_count' => run.fetch(:jobs).size, 'jobs' => jobs}
+        end
+        {'id' => run.fetch(:id), 'run_attempt' => attempt, 'status' => run.fetch(:status, 'in_progress'),
+         'conclusion' => run[:conclusion], 'created_at' => created, 'run_started_at' => created, 'updated_at' => Time.now.utc.iso8601}
+      end
+      s['github']["GET #{BUILD_RUNS}"] = {'workflow_runs' => listed}
+    end
+  end
+
+  def pending_deployments(run_id, environment_id: 1)
+    update_scenario do |s|
+      s['github']["GET repos/sorah-rbpkg/build/actions/runs/#{run_id}/pending_deployments"] = [{'environment' => {'id' => environment_id, 'name' => 'release'}}]
+    end
+  end
+
+  def watch(*args) = bin('releng-watch', '--once', *args)
+
+  def watch_state(version) = JSON.parse(File.read(File.join(build_dir, 'tmp', 'releng-watch', "#{version}.json")))
 
   def calls
     file = "#{env.fetch('RELENG_FAKE_EXTERNAL')}.calls.jsonl"

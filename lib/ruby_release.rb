@@ -16,7 +16,7 @@ module RubyRelease
 
   def self.fetch(url)
     res = get(url)
-    raise "GET #{url}: #{res.status}" unless res.ok?
+    raise Releng::External::Error, "GET #{url}: #{res.status}" unless res.ok?
     res.body
   end
 
@@ -33,7 +33,7 @@ module RubyRelease
     when 200 then load_releases(res.body).find { it.fetch('version') == version }
     # The bucket answers 403 for a missing object.
     when 403, 404 then nil
-    else raise "GET #{url}: #{res.status}"
+    else raise Releng::External::Error, "GET #{url}: #{res.status}"
     end
   end
 

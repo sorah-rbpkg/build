@@ -6,7 +6,13 @@ This repository builds the Debian packages of [sorah-rbpkg/ruby](https://github.
 
 ### Releasing a new version
 
-Import the release into your checkout of sorah-rbpkg/ruby, `../ruby` by default, review it, and push it:
+Usually, start [`bin/releng-watch`](./docs/releng-watch.md) with the versions as soon as upstream tags them. It builds each from its upstream draft, follows it through publish and announcement, and tells you when to approve the release jobs, which leaves `bin/publish` below:
+
+```
+bin/releng-watch 4.0.11 3.4.14
+```
+
+By hand, import the release into your checkout of sorah-rbpkg/ruby, `../ruby` by default, review it, and push it:
 
 ```
 bin/import 4.0.9 3.4.12                      # one version per series
@@ -83,6 +89,7 @@ A series with `"test": true`, or a `build` run started by hand with `test` check
 ## Documentation
 
 - [docs/architecture.md](./docs/architecture.md): what each workflow and job does, and caveats
+- [docs/releng-watch.md](./docs/releng-watch.md): following a release from its upstream draft, and its failures
 - [docs/tools.md](./docs/tools.md): `bin/import`, `bin/roll`, `bin/publish` and `bin/promote` in detail
 - [docs/test-mode.md](./docs/test-mode.md): test runs and cleaning up after them
 - [docs/nightly.md](./docs/nightly.md): nightly packages and their roll into sorah-rbpkg/dockerfiles

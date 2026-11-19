@@ -3,11 +3,18 @@
 require 'json'
 require 'net/http'
 require 'open3'
+require 'openssl'
+require 'timeout'
 
 module Releng
   def self.github_url(repository) = "#{ENV.fetch('RELENG_GITHUB_URL', 'https://github.com/')}#{repository}.git"
 
   class External
+    # A call that failed, as the network or the other side may at any time.
+    class Error < StandardError; end
+
+    NETWORK_ERRORS = [IOError, SystemCallError, SocketError, Timeout::Error, OpenSSL::SSL::SSLError].freeze
+
     Response = Data.define(:status, :body) do
       def ok? = (200..299).cover?(status)
     end
@@ -20,12 +27,16 @@ module Releng
       uri = URI(url)
       res = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https') { it.request(Net::HTTP::Get.new(uri)) }
       Response.new(status: res.code.to_i, body: res.body)
+    rescue *NETWORK_ERRORS => e
+      raise Error, "GET #{url} failed", cause: e
     end
 
     def http_head(url)
       uri = URI(url)
       res = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https') { it.request(Net::HTTP::Head.new(uri)) }
       res.code.to_i
+    rescue *NETWORK_ERRORS => e
+      raise Error, "HEAD #{url} failed", cause: e
     end
 
     # The GitHub REST API through gh, which holds the credentials.
@@ -39,7 +50,7 @@ module Releng
         end
       end
       out, err, status = Open3.capture3(*args)
-      raise "gh api #{method} #{path}: #{err.strip}" unless status.success?
+      raise Error, "gh api #{method} #{path}: #{err.strip}" unless status.success?
       out.empty? ? nil : JSON.parse(out)
     end
 
@@ -83,7 +94,7 @@ module Releng
       end
       responses = scenario.fetch('github', {})
       return responses["#{method} #{path}"] if responses.key?("#{method} #{path}")
-      raise "gh api #{method} #{path}: HTTP 404: Not Found" if method == 'GET'
+      raise External::Error, "gh api #{method} #{path}: HTTP 404: Not Found" if method == 'GET'
     end
 
     def signing_ok?(_dir) = scenario.fetch('signing', true)

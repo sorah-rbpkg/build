@@ -8,6 +8,10 @@ The scripts under [`bin/`](../bin) that take a release from ruby-lang.org to the
 
 `bin/import --draft VERSION` imports the `pub/tmp/` draft of a release instead, onto `draft/<branch>` and `draft/upstream-N.M`, branched from `origin`, with the draft's checksum and no pristine-tar data, so a draft that upstream re-cuts can be thrown away. `--push --draft` pushes only those two branches and the tag, and `bin/roll draft/<branch>` builds them. `bin/import --discard VERSION` deletes them and the tag here and on `origin`, refusing a release already finalized. Once the release is published, `bin/import --finalize VERSION` checks the published tarball against `checksums/ruby-<version>.json` and the orig against it, commits its pristine-tar data, and in one atomic push fast-forwards the real branches to the draft ones, pushes `pristine-tar` and deletes the draft branches. It refuses, changing nothing, when the real branch has moved past the draft, which then needs rebasing onto it.
 
+## bin/releng-watch
+
+`bin/releng-watch VERSION...` runs `bin/import --draft`, `bin/check-patches`, `bin/roll`, `--discard` and `--finalize` as each release moves upstream, and lists what needs a person. [releng-watch.md](./releng-watch.md) describes it.
+
 ## bin/check-patches
 
 `bin/check-patches REV...` applies `debian/patches/series` at each revision of a local checkout, `../ruby` by default, as `dpkg-source` does before a build: in order and without fuzz. It lists each patch that needs fuzz, is already upstream, or does not apply, and exits 1 if there is any. `bin/import` runs it on each branch it imports onto and `bin/roll` on each commit it rolls; both only warn, as the fix is a follow-up `gbp pq` commit. Nightly runs give the same warning earlier, as soon as a branch snapshot has a patch upstream or needs it refreshed.
