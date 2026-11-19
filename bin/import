@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
-# Usage: bin/import [--source-dir DIR] [--branch SERIES=BRANCH]... [--ahead BRANCH=SHA]... [--pr NUMBER]... VERSION...
-#        bin/import --push [--source-dir DIR] [--branch SERIES=BRANCH]... VERSION...
+# Usage: bin/import [--draft] [--source-dir DIR] [--branch SERIES=BRANCH]... [--ahead BRANCH=SHA]... [--pr NUMBER]... VERSION...
+#        bin/import --push [--draft] [--yes] [--source-dir DIR] [--branch SERIES=BRANCH]... VERSION...
+#        bin/import --discard [--yes] [--source-dir DIR] [--branch SERIES=BRANCH]... VERSION...
+#        bin/import --finalize [--yes] [--source-dir DIR] [--branch SERIES=BRANCH]... VERSION...
 #        bin/import --checksum-only [--pr NUMBER]... VERSION...
 #
 # Imports the ruby-lang.org release of each VERSION into a local checkout of sorah-rbpkg/ruby, ../ruby by
@@ -17,6 +19,12 @@
 # verifies against. --checksum-only writes just that, for a version imported without one.
 #
 # --push pushes those branches and tags after showing what they add.
+#
+# --draft imports the pub/tmp/ draft onto draft/<branch> and draft/upstream-N.M instead, branched from origin,
+# without pristine-tar data, so a re-cut draft can be thrown away with --discard. --finalize, once the release
+# is published, checks it against the committed checksum, commits its pristine-tar data and fast-forwards the
+# real branches to the draft ones in one push, deleting them.
+require 'digest'
 require 'fileutils'
 require 'open3'
 require 'optparse'
@@ -26,12 +34,18 @@ ROOT = File.expand_path('..', __dir__)
 REPOSITORY = 'sorah-rbpkg/ruby'
 REVISION = '0nkmi1'
 
-Import = Data.define(:version, :series, :branch) do
+Import = Data.define(:version, :series, :branch, :draft) do
   def upstream_version = version.tr('-', '~')
   def source = "ruby#{series}"
   def upstream_branch = "upstream-#{series}"
   def upstream_tag = "upstream/#{upstream_version.tr('~:', '_%')}"
   def deb_version = "#{upstream_version}-#{REVISION}"
+  def orig_name = "#{source}_#{upstream_version}.orig.tar.gz"
+  def draft_branch = "draft/#{branch}"
+  def draft_upstream_branch = "draft/#{upstream_branch}"
+  # The branches this import commits to.
+  def work_branch = draft ? draft_branch : branch
+  def work_upstream_branch = draft ? draft_upstream_branch : upstream_branch
 end
 
 def run(*cmd, **opts)
@@ -45,14 +59,20 @@ def capture(*cmd, **opts)
   out
 end
 
-push = false
+mode = :import
+draft = false
+yes = false
 checksum_only = false
 prs = []
 ahead = {}
 branches = {}
 source_dir = File.expand_path('../ruby', ROOT)
 OptionParser.new do |o|
-  o.on('--push', 'Push what an earlier run imported') { push = true }
+  o.on('--push', 'Push what an earlier run imported') { mode = :push }
+  o.on('--discard', 'Delete the draft branches and tag, here and on origin') { mode = :discard }
+  o.on('--finalize', 'Move the draft branches onto the real ones once the release is published') { mode = :finalize }
+  o.on('--draft', 'Import the pub/tmp/ draft onto draft/ branches') { draft = true }
+  o.on('--yes', 'Push without asking') { yes = true }
   o.on('--checksum-only', 'Only write checksums/ruby-<version>.json') { checksum_only = true }
   o.on('--source-dir DIR', 'Local checkout of sorah-rbpkg/ruby') { source_dir = File.expand_path(it) }
   o.on('--branch SERIES=BRANCH', 'Debian branch of SERIES, rather than master or master-N.M') do
@@ -67,7 +87,10 @@ OptionParser.new do |o|
     ahead[branch] = sha
   end
 end.parse!(ARGV)
-abort 'Usage: bin/import [--push | --checksum-only] [--source-dir DIR] [--branch SERIES=BRANCH]... [--ahead BRANCH=SHA]... [--pr NUMBER]... VERSION...' if ARGV.empty?
+abort 'Usage: bin/import [--push | --discard | --finalize | --checksum-only] [--draft] [--yes] [--source-dir DIR] [--branch SERIES=BRANCH]... [--ahead BRANCH=SHA]... [--pr NUMBER]... VERSION...' if ARGV.empty?
+abort '--draft takes its checksums from the draft, not --pr' if draft && !prs.empty?
+abort '--draft branches from origin, so --ahead does not apply' if draft && !ahead.empty?
+draft = true if %i[discard finalize].include?(mode)
 if checksum_only
   releases = RubyRelease::Index.load(prs:)
   ARGV.each do |version|
@@ -81,8 +104,10 @@ abort "#{source_dir} is not a checkout of #{REPOSITORY}; pass --source-dir" unle
 
 git = ->(*args) { capture('git', *args, chdir: source_dir) }
 git_ok = ->(*args) { system('git', *args, chdir: source_dir, out: File::NULL, err: File::NULL) }
+rev = ->(ref) { git.('rev-parse', '--verify', '-q', ref).strip if git_ok.('rev-parse', '--verify', '-q', ref) }
 abort "#{source_dir} has uncommitted changes" unless git.('status', '--porcelain', '--untracked-files=no').empty?
-run('git', 'fetch', '-q', '--tags', 'origin', chdir: source_dir)
+# Prunes, so a draft branch deleted on origin is not taken as still there.
+run('git', 'fetch', '-q', '--prune', '--tags', 'origin', chdir: source_dir)
 
 imports = ARGV.map do |version|
   series = version[/\A(\d+\.\d+)\./, 1] or abort "#{version} is not a ruby version"
@@ -92,40 +117,187 @@ imports = ARGV.map do |version|
       git.('show', "refs/remotes/origin/#{b}:debian/changelog").start_with?("ruby#{series} ")
   end
   abort "no debian branch of #{REPOSITORY} holds ruby#{series}" unless branch
-  Import.new(version:, series:, branch:)
+  Import.new(version:, series:, branch:, draft:)
 end
 abort 'one version per series' unless imports.map(&:series).uniq.size == imports.size
+branch_args = imports.filter_map { "--branch #{it.series}=#{it.branch}" if branches[it.series] }
 
-if push
+confirm = lambda do |question|
+  next if yes
+
+  print "#{question} [y/N] "
+  abort 'Not pushed' unless $stdin.gets&.strip == 'y'
+end
+
+# Leaves the checkout off the branches about to move or go away.
+park = lambda do |imp|
+  current = git.('branch', '--show-current').strip
+  next unless [imp.draft_branch, imp.draft_upstream_branch].include?(current)
+
+  git_ok.('rev-parse', '--verify', '-q', "refs/heads/#{imp.branch}") ? git.('checkout', '-q', imp.branch) : git.('checkout', '-q', '--detach')
+end
+
+case mode
+when :push
   imports.each do |imp|
-    abort "#{imp.upstream_tag} does not exist; run bin/import first" unless git_ok.('rev-parse', '--verify', '-q', "refs/tags/#{imp.upstream_tag}")
+    abort "#{imp.upstream_tag} does not exist; run bin/import first" unless rev.("refs/tags/#{imp.upstream_tag}")
     git.('verify-tag', imp.upstream_tag)
-    head = git.('show', "refs/heads/#{imp.branch}:debian/changelog").lines.first
-    abort "#{imp.branch} is at #{head.strip}, not #{imp.deb_version}~dist" unless head.include?("(#{imp.deb_version}~dist)")
+    abort "#{imp.work_branch} does not exist; run bin/import#{draft ? ' --draft' : ''} first" unless rev.("refs/heads/#{imp.work_branch}")
+    head = git.('show', "refs/heads/#{imp.work_branch}:debian/changelog").lines.first
+    abort "#{imp.work_branch} is at #{head.strip}, not #{imp.deb_version}~dist" unless head.include?("(#{imp.deb_version}~dist)")
   end
 
-  refs = [*imports.flat_map { [it.branch, it.upstream_branch] }, 'pristine-tar'].uniq
-  refs.each do |ref|
+  # A draft branch new to origin is shown against the real branch it starts from.
+  refs = imports.flat_map { [[it.work_branch, it.branch], [it.work_upstream_branch, it.upstream_branch]] }
+  refs << %w[pristine-tar pristine-tar] unless draft
+  refs.uniq!
+  refs.each do |ref, base|
+    since = rev.("refs/remotes/origin/#{ref}") ? "refs/remotes/origin/#{ref}" : "refs/remotes/origin/#{base}"
     puts "#{ref}:"
-    puts git.('log', '--format=  %h %G? %s', "refs/remotes/origin/#{ref}..refs/heads/#{ref}")
+    puts git.('log', '--format=  %h %G? %s', "#{since}..refs/heads/#{ref}")
   end
   puts 'tags:', *imports.map { "  #{it.upstream_tag}" }
-  print "Push these to #{git.('remote', 'get-url', 'origin').strip}? [y/N] "
-  abort 'Not pushed' unless $stdin.gets&.strip == 'y'
+  confirm.("Push these to #{git.('remote', 'get-url', 'origin').strip}?")
   # Without --force, so each branch only fast-forwards.
-  run('git', 'push', '--atomic', 'origin', *refs.map { "refs/heads/#{it}" }, *imports.map { "refs/tags/#{it.upstream_tag}" },
+  run('git', 'push', '--atomic', 'origin', *refs.map { "refs/heads/#{it.first}" }, *imports.map { "refs/tags/#{it.upstream_tag}" },
     chdir: source_dir)
-  puts "Next: bin/roll #{imports.map(&:branch).join(' ')}"
+  puts "Next: bin/roll #{imports.map(&:work_branch).join(' ')}"
+  exit
+
+when :discard
+  refspecs = []
+  imports.each do |imp|
+    tag = rev.("refs/tags/#{imp.upstream_tag}^{commit}")
+    # The tag of a finalized release is on the real upstream branch, and stays.
+    if tag && git_ok.('merge-base', '--is-ancestor', tag, "refs/remotes/origin/#{imp.upstream_branch}")
+      abort "#{imp.upstream_tag} is on #{imp.upstream_branch} already, so #{imp.version} is not a draft"
+    end
+
+    [imp.draft_branch, imp.draft_upstream_branch].each do |b|
+      sha = rev.("refs/remotes/origin/#{b}") or next
+      refspecs << "--force-with-lease=refs/heads/#{b}:#{sha}" << ":refs/heads/#{b}"
+    end
+    remote_tag = git.('ls-remote', 'origin', "refs/tags/#{imp.upstream_tag}").split("\t").first
+    refspecs << "--force-with-lease=refs/tags/#{imp.upstream_tag}:#{remote_tag}" << ":refs/tags/#{imp.upstream_tag}" if remote_tag
+  end
+
+  unless refspecs.empty?
+    puts 'Deleting on origin:', *refspecs.grep(/\A:/).map { "  #{it.delete_prefix(':')}" }
+    confirm.("Delete these from #{git.('remote', 'get-url', 'origin').strip}?")
+    run('git', 'push', '--atomic', 'origin', *refspecs, chdir: source_dir)
+  end
+  imports.each do |imp|
+    park.(imp)
+    [imp.draft_branch, imp.draft_upstream_branch].each { git.('branch', '-D', it) if rev.("refs/heads/#{it}") }
+    git.('tag', '-d', imp.upstream_tag) if rev.("refs/tags/#{imp.upstream_tag}")
+  end
+  puts "Discarded the drafts of #{imports.map(&:version).join(', ')}"
+  exit
+
+when :finalize
+  dir = File.join(ROOT, 'tmp', 'import')
+  FileUtils.mkdir_p(dir)
+  pristine_tar = rev.('refs/remotes/origin/pristine-tar') or abort 'origin has no pristine-tar'
+  local_pristine_tar = rev.('refs/heads/pristine-tar')
+  if local_pristine_tar && local_pristine_tar != pristine_tar
+    abort "pristine-tar is at #{local_pristine_tar} locally but at #{pristine_tar} on origin"
+  end
+  # Starts from origin's pristine-tar each time, so a commit from an earlier failed attempt is dropped.
+  git.('branch', '-f', 'pristine-tar', pristine_tar)
+
+  pending = imports.reject do |imp|
+    next false if rev.("refs/remotes/origin/#{imp.draft_branch}")
+
+    tag = rev.("refs/tags/#{imp.upstream_tag}^{commit}")
+    abort "origin has no #{imp.draft_branch}; nothing to finalize" unless tag && git_ok.('merge-base', '--is-ancestor', tag, "refs/remotes/origin/#{imp.upstream_branch}")
+
+    puts "#{imp.version} is finalized already"
+    true
+  end
+  exit if pending.empty?
+
+  refspecs = []
+  pending.each do |imp|
+    puts "=> #{imp.source} #{imp.version}"
+    [[imp.draft_branch, imp.branch], [imp.draft_upstream_branch, imp.upstream_branch]].each do |d, b|
+      remote = rev.("refs/remotes/origin/#{d}") or abort "origin has no #{d}"
+      local = rev.("refs/heads/#{d}")
+      abort "#{d} is at #{local} locally but at #{remote} on origin; push or reset it" if local && local != remote
+      unless git_ok.('merge-base', '--is-ancestor', "refs/remotes/origin/#{b}", remote)
+        abort "#{b} on origin has moved past #{d}; rebase it: git rebase origin/#{b} #{d}"
+      end
+      refspecs << "#{remote}:refs/heads/#{b}" << "--force-with-lease=refs/heads/#{d}:#{remote}" << ":refs/heads/#{d}"
+    end
+
+    checksum = RubyRelease::Checksum.read(imp.version) or abort "no #{RubyRelease::Checksum.path(imp.version)}"
+    # The published name, as pristine-tar keeps it.
+    tarball = File.join(dir, imp.orig_name)
+    RubyRelease.download(checksum, tarball, published_only: true)
+    puts "  #{checksum.url} matches #{checksum.path}"
+    orig = File.join(dir, "generated-#{imp.orig_name}")
+    archive = "git archive --format=tar --prefix #{imp.source}-#{imp.upstream_version}/ #{imp.upstream_tag} | gzip -n"
+    File.binwrite(orig, capture('bash', '-o', 'pipefail', '-c', archive, chdir: source_dir, binmode: true))
+    run(File.join(ROOT, 'bin', 'verify-orig'), '--upstream', tarball, orig, imp.upstream_version)
+    run('pristine-tar', 'commit', tarball, imp.upstream_tag, chdir: source_dir)
+  end
+  refspecs << 'refs/heads/pristine-tar:refs/heads/pristine-tar'
+
+  pending.each do |imp|
+    puts "#{imp.branch} <- #{imp.draft_branch}:"
+    puts git.('log', '--format=  %h %G? %s', "refs/remotes/origin/#{imp.branch}..refs/remotes/origin/#{imp.draft_branch}")
+  end
+  puts 'pristine-tar:', git.('log', '--format=  %h %s', "#{pristine_tar}..refs/heads/pristine-tar")
+  confirm.("Push these to #{git.('remote', 'get-url', 'origin').strip}, deleting the draft branches?")
+  # Without --force, so each real branch only fast-forwards.
+  run('git', 'push', '--atomic', 'origin', *refspecs, chdir: source_dir)
+  run('git', 'fetch', '-q', '--prune', 'origin', chdir: source_dir)
+  pending.each do |imp|
+    park.(imp)
+    current = git.('branch', '--show-current').strip
+    [imp.branch, imp.upstream_branch].each do |b|
+      if b == current
+        git.('merge', '-q', '--ff-only', "refs/remotes/origin/#{b}")
+      else
+        git.('branch', '-f', b, "refs/remotes/origin/#{b}")
+      end
+    end
+    [imp.draft_branch, imp.draft_upstream_branch].each { git.('branch', '-D', it) if rev.("refs/heads/#{it}") }
+  end
+  puts "Finalized #{pending.map(&:version).join(', ')}"
   exit
 end
 
-releases = RubyRelease::Index.load(prs:)
+releases = if draft
+  RubyRelease::Index.new(sources: {'draft' => imports.map { RubyRelease.draft_info(it.version) or abort "#{it.version} has no draft in #{RubyRelease::DRAFT_URL}" }})
+else
+  RubyRelease::Index.load(prs:)
+end
+
+skipped = []
 imports.each do |imp|
-  abort "#{imp.upstream_tag} already exists" if git_ok.('rev-parse', '--verify', '-q', "refs/tags/#{imp.upstream_tag}")
+  if draft
+    on_origin = rev.("refs/remotes/origin/#{imp.draft_branch}")
+    local = rev.("refs/heads/#{imp.draft_branch}")
+    if local || on_origin
+      committed = RubyRelease::Checksum.read(imp.version)
+      # Already imported from this very draft, as when the monitor restarts.
+      if local && rev.("refs/tags/#{imp.upstream_tag}") && committed&.source == 'draft' && committed.sha256 == releases.find(imp.version).sha256
+        puts "#{imp.version} is imported from its draft already on #{imp.draft_branch}"
+        skipped << imp
+        next
+      end
+      abort "#{imp.draft_branch} exists#{on_origin ? ' on origin' : ''}; bin/import --discard #{imp.version} first"
+    end
+    abort "#{imp.upstream_tag} already exists; bin/import --discard #{imp.version} first" if rev.("refs/tags/#{imp.upstream_tag}")
+    git.('branch', '--no-track', imp.draft_branch, "refs/remotes/origin/#{imp.branch}")
+    git.('branch', '--no-track', imp.draft_upstream_branch, "refs/remotes/origin/#{imp.upstream_branch}")
+    next
+  end
+
+  abort "#{imp.upstream_tag} already exists" if rev.("refs/tags/#{imp.upstream_tag}")
   [imp.branch, imp.upstream_branch, 'pristine-tar'].each do |b|
     remote = git.('rev-parse', "refs/remotes/origin/#{b}").strip
-    if git_ok.('rev-parse', '--verify', '-q', "refs/heads/#{b}")
-      local = git.('rev-parse', "refs/heads/#{b}").strip
+    if (local = rev.("refs/heads/#{b}"))
       next if local == remote
       abort "#{b} is at #{local} locally but at #{remote} on origin; pass --ahead #{b}=#{local} to import on top of it" unless ahead[b] == local
       abort "#{b} at #{local} does not descend from #{remote} on origin" unless git_ok.('merge-base', '--is-ancestor', remote, local)
@@ -134,6 +306,7 @@ imports.each do |imp|
     end
   end
 end
+imports -= skipped
 
 dir = File.join(ROOT, 'tmp', 'import')
 FileUtils.mkdir_p(dir)
@@ -142,33 +315,34 @@ env = {
   'DEBEMAIL' => ENV['DEBEMAIL'] || git.('config', 'user.email').strip,
 }
 imports.each do |imp|
-  puts "=> #{imp.source} #{imp.version} on #{imp.branch}"
+  puts "=> #{imp.source} #{imp.version} on #{imp.work_branch}"
   checksum = releases.find(imp.version)
   tarball = File.join(dir, File.basename(checksum.url))
   RubyRelease.download(checksum, tarball)
   checksum.write
   puts "  #{checksum.path}: #{checksum.sha256} from #{checksum.source}"
 
-  run('git', 'checkout', '-q', imp.branch, chdir: source_dir)
+  run('git', 'checkout', '-q', imp.work_branch, chdir: source_dir)
   # debian/gbp.conf names branches of an older series, so they are given here.
   # The orig symlink would land next to the checkout, outside of it.
-  run('gbp', 'import-orig', '--no-interactive', '--pristine-tar', '--sign-tags', '--no-symlink-orig',
-    "--upstream-branch=#{imp.upstream_branch}", "--debian-branch=#{imp.branch}",
+  # A draft's pristine-tar data is committed by --finalize, from the published tarball.
+  run('gbp', 'import-orig', '--no-interactive', draft ? '--no-pristine-tar' : '--pristine-tar', '--sign-tags', '--no-symlink-orig',
+    "--upstream-branch=#{imp.work_upstream_branch}", "--debian-branch=#{imp.work_branch}",
     '--upstream-tag=upstream/%(version)s', "--upstream-version=#{imp.upstream_version}", tarball, chdir: source_dir)
   run(env, 'dch', '--newversion', "#{imp.deb_version}~dist", '--distribution', 'unstable', '--force-distribution',
     imp.version, chdir: source_dir)
   run('git', 'commit', '-q', '-m', "releng #{imp.deb_version}", '--', 'debian/changelog', chdir: source_dir)
 
   # The same orig the build generates, checked as the build checks it.
-  orig = File.join(dir, "#{imp.source}_#{imp.upstream_version}.orig.tar.gz")
+  orig = File.join(dir, imp.orig_name)
   archive = "git archive --format=tar --prefix #{imp.source}-#{imp.upstream_version}/ #{imp.upstream_tag} | gzip -n"
   File.binwrite(orig, capture('bash', '-o', 'pipefail', '-c', archive, chdir: source_dir, binmode: true))
   run(File.join(ROOT, 'bin', 'verify-orig'), '--upstream', tarball, orig, imp.upstream_version)
   # Not fatal, as the fix is a follow-up commit on the same branch.
-  unless system(File.join(ROOT, 'bin', 'check-patches'), '--source-dir', source_dir, imp.branch)
-    warn "#{imp.branch}: debian/patches fails to apply; fix it before bin/import --push"
+  unless system(File.join(ROOT, 'bin', 'check-patches'), '--source-dir', source_dir, imp.work_branch)
+    warn "#{imp.work_branch}: debian/patches fails to apply; fix it before bin/import --push"
   end
 end
 
-branch_args = imports.filter_map { "--branch #{it.series}=#{it.branch}" if branches[it.series] }
-puts "Review #{source_dir}, then: #{['bin/import --push', *branch_args, *imports.map(&:version)].join(' ')}"
+push = ['bin/import --push', *('--draft' if draft), *branch_args, *(imports + skipped).map(&:version)].join(' ')
+puts "Review #{source_dir}, then: #{push}"
