@@ -3,8 +3,8 @@ require 'date'
 require 'digest'
 require 'fileutils'
 require 'json'
-require 'net/http'
 require 'yaml'
+require_relative 'releng/external'
 
 module RubyRelease
   # Releases and their checksums are kept here, apart from the server that hosts the tarballs.
@@ -12,17 +12,11 @@ module RubyRelease
   DRAFT_URL = 'https://cache.ruby-lang.org/pub/tmp/'
   CHECKSUMS_DIR = File.expand_path('../checksums', __dir__)
 
-  def self.get(url)
-    uri = URI(url)
-    req = Net::HTTP::Get.new(uri)
-    token = ENV['GH_TOKEN'] || ENV['GITHUB_TOKEN']
-    req['Authorization'] = "Bearer #{token}" if token && uri.host == 'api.github.com'
-    Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https') { it.request(req) }
-  end
+  def self.get(url) = Releng::External.current.http_get(url)
 
   def self.fetch(url)
     res = get(url)
-    raise "GET #{url}: #{res.code}" unless res.is_a?(Net::HTTPSuccess)
+    raise "GET #{url}: #{res.status}" unless res.ok?
     res.body
   end
 
@@ -35,11 +29,11 @@ module RubyRelease
   def self.draft_info(version)
     url = draft_info_url(version)
     res = get(url)
-    case res
-    when Net::HTTPSuccess then load_releases(res.body).find { it.fetch('version') == version }
+    case res.status
+    when 200 then load_releases(res.body).find { it.fetch('version') == version }
     # The bucket answers 403 for a missing object.
-    when Net::HTTPNotFound, Net::HTTPForbidden then nil
-    else raise "GET #{url}: #{res.code}"
+    when 403, 404 then nil
+    else raise "GET #{url}: #{res.status}"
     end
   end
 
@@ -67,7 +61,7 @@ module RubyRelease
   Index = Data.define(:sources) do
     def self.load(prs: [], drafts: [])
       sources = prs.to_h do |number|
-        pr = JSON.parse(RubyRelease.fetch("https://api.github.com/repos/#{WWW_REPOSITORY}/pulls/#{number}"))
+        pr = Releng::External.current.github("repos/#{WWW_REPOSITORY}/pulls/#{number}")
         head = pr.fetch('head')
         # Only a branch of the repository itself, so a fork cannot supply checksums.
         raise "#{WWW_REPOSITORY}##{number} comes from a fork" unless head.fetch('repo')&.fetch('full_name') == WWW_REPOSITORY
@@ -76,7 +70,7 @@ module RubyRelease
         ["#{WWW_REPOSITORY}##{number}@#{head.fetch('sha')}", RubyRelease.load_releases(RubyRelease.fetch(RubyRelease.releases_url(head.fetch('sha'))))]
       end
       sources["#{WWW_REPOSITORY}@master"] = RubyRelease.load_releases(RubyRelease.fetch(RubyRelease.releases_url('master')))
-      drafts.each { |version| sources['draft'] = [*sources['draft'], *RubyRelease.draft_info(version)] }
+      sources['draft'] = drafts.filter_map { RubyRelease.draft_info(it) } unless drafts.empty?
       new(sources:)
     end
 
@@ -94,17 +88,17 @@ module RubyRelease
   def self.download(checksum, path, published_only: false)
     url = checksum.url
     res = get(url)
-    case res
-    when Net::HTTPSuccess
+    case res.status
+    when 200
       File.binwrite(path, res.body)
-    when Net::HTTPNotFound, Net::HTTPForbidden
-      raise "GET #{url}: #{res.code}" if published_only
+    when 403, 404
+      raise "GET #{url}: #{res.status}" if published_only
 
       url = "#{DRAFT_URL}#{File.basename(url, '.tar.gz')}-draft.tar.gz"
       warn "#{checksum.url} is not there yet; taking #{url}"
       File.binwrite(path, fetch(url))
     else
-      raise "GET #{url}: #{res.code}"
+      raise "GET #{url}: #{res.status}"
     end
     sha256 = Digest::SHA256.file(path).hexdigest
     raise "#{url}: sha256 is #{sha256}, not #{checksum.sha256} from #{checksum.source}" unless sha256 == checksum.sha256

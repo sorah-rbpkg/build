@@ -87,7 +87,7 @@ A series with `"test": true`, or a `build` run started by hand with `test` check
 - [docs/test-mode.md](./docs/test-mode.md): test runs and cleaning up after them
 - [docs/nightly.md](./docs/nightly.md): nightly packages and their roll into sorah-rbpkg/dockerfiles
 - [docs/ruby-defaults.md](./docs/ruby-defaults.md): the Rubies ruby-defaults lists per series and distro, kept on its dist branches
-- [docs/setup.md](./docs/setup.md): one-time setup and local tools
+- [docs/setup.md](./docs/setup.md): one-time setup, local tools and specs
 
 ## Configuration
 

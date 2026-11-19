@@ -14,6 +14,10 @@ local linters = new Mapping<String, Step> {
     glob = List(".github/scripts/**/*.sh", "bin/generate")
     check = "shellcheck {{files}}"
   }
+  ["rspec"] {
+    glob = List("bin/**", "lib/**", "spec/**", "Gemfile*")
+    check = "bundle exec rspec spec/lib"
+  }
   ["jactionlint"] = Builtins.jactionlint
   ["zizmor"] = Builtins.zizmor
   ["check-added-large-files"] = Builtins.check_added_large_files

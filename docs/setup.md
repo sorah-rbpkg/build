@@ -22,3 +22,5 @@ hk install
 ```
 
 `hk check --all` runs the same checks as CI. [`bin/publish`](./tools.md#binpublish) additionally needs `gpg`, [`sorah-debsign`](https://github.com/sorah/config/blob/master/bin/sorah-debsign) on `PATH`, and an `aptly` configured with the `sorah-ruby-<distro>` repositories and the `s3:sorah-ruby:` endpoint, and a checkout of sorah-rbpkg/dockerfiles you can push to `master`, `../dockerfiles` by default.
+
+`bundle exec rspec` runs the specs: `spec/lib/` for the library code, with every external call mocked, and `spec/integration/` for `bin/import`, `bin/roll`, `bin/plan` and `bin/check-patches`. The integration specs run the scripts against a throwaway sorah-rbpkg/ruby and copy of this repository with local origins and a throwaway signing key, answering what they would fetch from ruby-lang.org and GitHub from a scenario file through `Releng::FakeExternal` in [`lib/releng/external.rb`](../lib/releng/external.rb). They need `gbp`, `dch`, `pristine-tar` and `gpg`. `hk check` runs only `spec/lib/`; CI runs both.

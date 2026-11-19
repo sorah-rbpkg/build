@@ -2,6 +2,7 @@
 require 'json'
 require 'open3'
 require 'tmpdir'
+require_relative 'releng/external'
 
 ROOT = File.expand_path('..', __dir__)
 BUILD_REPOSITORY = ENV.fetch('GITHUB_REPOSITORY', 'sorah-rbpkg/build')
@@ -29,7 +30,7 @@ Series = Data.define(:file, :source, :repository, :master, :commit, :dist, :dist
     )
   end
 
-  def url = "https://github.com/#{repository}.git"
+  def url = Releng.github_url(repository)
   # Unique across series, unlike source: ruby-defaults has one series per default Ruby.
   def id = File.basename(file, '.json')
 

@@ -46,7 +46,7 @@ abort "#{source_dir} is not a checkout of #{repository}; pass --source-dir" unle
 branch = capture('git', 'branch', '--show-current').strip
 abort "on #{branch.empty? ? 'a detached HEAD' : branch}, not main" unless branch == 'main'
 
-url = "https://github.com/#{repository}.git"
+url = Releng.github_url(repository)
 # Shared with bin/plan.
 dir = File.join(ROOT, 'tmp', 'plan', repository.tr('/', '_'))
 capture('git', 'init', '-q', '--bare', dir) unless File.directory?(dir)
