@@ -128,6 +128,11 @@ rescue
   raise
 end
 
+# Not fatal, so a roll can still go ahead knowingly.
+unless system(File.join(ROOT, 'bin', 'check-patches'), '--source-dir', source_dir, *rolls.map(&:commit))
+  warn 'debian/patches fails to apply, so the build would fail'
+end
+
 message = File.join(ROOT, 'tmp', 'roll-message')
 FileUtils.mkdir_p(File.dirname(message))
 plans.each do |roll, targets|

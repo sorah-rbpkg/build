@@ -1,0 +1,73 @@
+#!/usr/bin/env ruby
+# Usage: bin/check-patches [--source-dir DIR] REV...
+#
+# Applies debian/patches/series at each REV of a local checkout, ../ruby by default, as dpkg-source does before a
+# build: in order and without fuzz. Reports each patch that needs fuzz, is already upstream, or does not apply, and
+# exits 1 if there is any. A package without a 3.0 (quilt) source has nothing to check.
+require 'open3'
+require 'optparse'
+require 'tmpdir'
+
+ROOT = File.expand_path('..', __dir__)
+
+def patch(tree, file, *args)
+  system('patch', '-d', tree, '-p1', '-s', '-f', '-N', *args, in: file, out: File::NULL, err: File::NULL)
+end
+
+# Each entry is [patch, problem], with problem nil for a patch that applies. nil without a series to apply.
+def check(tree)
+  format = File.join(tree, 'debian/source/format')
+  series = File.join(tree, 'debian/patches/series')
+  return unless File.exist?(format) && File.read(format).strip == '3.0 (quilt)' && File.exist?(series)
+
+  results = []
+  File.readlines(series, chomp: true).map { it.sub(/#.*/, '').split.first }.compact.each do |name|
+    file = File.join(tree, 'debian/patches', name)
+    problem = case
+    when patch(tree, file, '-F', '0', '--dry-run')
+      patch(tree, file, '-F', '0')
+      nil
+    when patch(tree, file, '--dry-run')
+      # Applied anyway, so the patches after it are checked against the tree they expect.
+      patch(tree, file)
+      'needs fuzz'
+    when patch(tree, file, '-R', '--dry-run')
+      'already upstream'
+    else
+      'does not apply'
+    end
+    results << [name, problem]
+    # Whatever follows would be checked against the wrong tree.
+    break if problem == 'does not apply'
+  end
+  results
+end
+
+source_dir = File.expand_path('../ruby', ROOT)
+OptionParser.new do |o|
+  o.on('--source-dir DIR', 'Local checkout holding each REV') { source_dir = File.expand_path(it) }
+end.parse!(ARGV)
+abort 'Usage: bin/check-patches [--source-dir DIR] REV...' if ARGV.empty?
+
+failed = false
+ARGV.each do |rev|
+  commit, status = Open3.capture2('git', '-C', source_dir, 'rev-parse', '--verify', '-q', "#{rev}^{commit}")
+  abort "#{rev} is not in #{source_dir}" unless status.success?
+
+  Dir.mktmpdir('check-patches') do |tree|
+    statuses = Open3.pipeline(['git', '-C', source_dir, 'archive', commit.strip], ['tar', '-x', '-C', tree])
+    abort "cannot extract #{rev} from #{source_dir}" unless statuses.all?(&:success?)
+
+    results = check(tree)
+    next puts "#{rev}: no quilt patches" unless results
+
+    problems = results.select { it[1] }
+    puts "#{rev}: #{results.size - problems.size} of #{results.size} patches apply"
+    problems.each { |name, problem| puts "  #{name}: #{problem}" }
+    failed ||= problems.any?
+  end
+end
+if failed
+  puts 'Refresh the series with: gbp pq import --force --time-machine=5 && gbp pq rebase && gbp pq export'
+  exit 1
+end

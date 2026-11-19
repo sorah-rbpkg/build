@@ -44,10 +44,10 @@ if [[ -f "$series" ]]; then
       scratch_git diff --cached --no-ext-diff >> "${work}/refreshed.patch"
       mv "${work}/refreshed.patch" "$file"
       scratch_git commit -q -m "$patch"
-      echo "::notice title=${SOURCE} ${patch}::needs fuzz on ${BRANCH}; refreshed"
+      echo "::warning title=${SOURCE} ${patch}::needs fuzz on ${BRANCH}; refreshed here, but the release from it will need it refreshed"
       kept+=("$patch")
     elif patch -d "$check" -p1 -s -f -R --dry-run < "$file" > /dev/null; then
-      echo "::notice title=${SOURCE} ${patch}::already in ${BRANCH}; dropped"
+      echo "::warning title=${SOURCE} ${patch}::already in ${BRANCH}; dropped here, but the release from it will need it dropped"
     else
       echo "::error title=${SOURCE} ${patch}::does not apply to ${BRANCH} at ${REVISION}"
       exit 1

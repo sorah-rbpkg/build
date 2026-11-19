@@ -148,6 +148,10 @@ imports.each do |imp|
   archive = "git archive --format=tar --prefix #{imp.source}-#{imp.upstream_version}/ #{imp.upstream_tag} | gzip -n"
   File.binwrite(orig, capture('bash', '-o', 'pipefail', '-c', archive, chdir: source_dir, binmode: true))
   run(File.join(ROOT, 'bin', 'verify-orig'), '--upstream', tarball, orig, imp.upstream_version)
+  # Not fatal, as the fix is a follow-up commit on the same branch.
+  unless system(File.join(ROOT, 'bin', 'check-patches'), '--source-dir', source_dir, imp.branch)
+    warn "#{imp.branch}: debian/patches fails to apply; fix it before bin/import --push"
+  end
 end
 
 branch_args = imports.filter_map { "--branch #{it.series}=#{it.branch}" if branches[it.series] }
