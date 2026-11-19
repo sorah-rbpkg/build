@@ -86,7 +86,7 @@ jobs:
           # A restored cache could alter the check below.
           cache: false
 
-      # verify-upstream.yml checks against master once the series drops releases_pr.
+      # The release job checks against master's releases.yml again.
       - name: verify
         run: bin/verify-orig ${RELEASES_PR:+--pr "$RELEASES_PR"} "out/${ORIG_NAME}" "$UPSTREAM_VERSION"
         env:

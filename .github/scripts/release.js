@@ -10,6 +10,15 @@ module.exports = async ({ core, exec }) => {
   // By SHA rather than by stage branch, which a later run may have moved.
   await git('fetch', '--no-tags', `https://github.com/${process.env.GITHUB_REPOSITORY}.git`, stageSha);
 
+  // A series may be built from a draft branch, which must have landed on its master before release.
+  await git('fetch', '--no-tags', `https://github.com/${target.repository}.git`,
+    `+refs/heads/${target.master}:refs/remotes/origin/${target.master}`);
+  const landed = await exec.exec('git', ['-C', dir, 'merge-base', '--is-ancestor',
+    target.commit, `refs/remotes/origin/${target.master}`], { ignoreReturnCode: true });
+  if (landed !== 0) {
+    throw new Error(`${target.commit} is not on ${target.repository} ${target.master} yet`);
+  }
+
   // A new dist branch is created by the push below, which fails if one has appeared meanwhile.
   if (!target.new_dist) {
     await git('fetch', '--no-tags', `https://github.com/${target.repository}.git`,

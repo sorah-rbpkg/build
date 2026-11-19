@@ -187,7 +187,7 @@ jobs:
 
       - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          install_args: aqua:sigstore/gitsign
+          install_args: aqua:sigstore/gitsign ruby
           # A restored cache could alter what this job signs.
           cache: false
 
@@ -218,6 +218,14 @@ jobs:
 
       - name: checksums
         run: sha256sum out/*
+
+      # The build may have trusted an unannounced release, so nothing is released until master's releases.yml agrees.
+      - name: verify against releases.yml
+        if: fromJSON(inputs.target).orig_name
+        run: bin/verify-orig "out/${ORIG_NAME}" "$UPSTREAM_VERSION"
+        env:
+          ORIG_NAME: ${{ fromJSON(inputs.target).orig_name }}
+          UPSTREAM_VERSION: ${{ fromJSON(inputs.target).upstream_version }}
 
       # A test run never obtains a token for the source repository, so it cannot write there.
       - uses: sorah/sts-cat/.github/actions/exchange-token@19e1177084d0f2dedb575ab1b78bd2a1a100f6e9 # main
